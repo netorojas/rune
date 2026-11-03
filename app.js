@@ -145,6 +145,16 @@
   const provName = (key) => provMeta(key).name;
   const provColor = (key) => provMeta(key).color;
 
+  const CTX_COLOR = {
+    messages: "#0f1a15",
+    free_space: "#d8d2c2",
+    auto_compact: "#8aa0a9",
+    system_tools: "#ff4b2b",
+    skills: "#c8f169",
+    system_prompt: "#5f6f68",
+  };
+  const ctxColor = (name) => CTX_COLOR[name] || "#8aa0a9";
+
   /* Manuais da frota. Fatos de uso vêm do snapshot; aqui ficam finalidade,
      limites e alavancas de administração + documentação oficial verificada. */
   const KNOWLEDGE = {
@@ -339,6 +349,7 @@
     initStars();
     initSceneFx();
     initParallax();
+    initFleetTilt();
     bindChrome();
     bindDelegates();
     bindKeyboard();
@@ -392,7 +403,7 @@
     renderCockpit();
     renderBand();
     renderTicker();
-    renderPipTip(true);
+    renderPipTip();
     if (state.wing) renderWing(state.wing, { preserve: true });
 
     if (first) {
@@ -489,6 +500,28 @@
     requestAnimationFrame(loop);
   }
 
+  function initFleetTilt() {
+    const fleet = $("#fleet");
+    if (!fleet || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const reset = (except) => fleet.querySelectorAll(".plot").forEach((p) => {
+      if (p === except) return;
+      p.style.setProperty("--rx", "0deg");
+      p.style.setProperty("--ry", "0deg");
+    });
+    fleet.addEventListener("pointermove", (e) => {
+      const card = e.target.closest(".provider");
+      const plot = card?.querySelector(".plot");
+      if (!plot) return;
+      const r = plot.getBoundingClientRect();
+      const dx = (e.clientX - r.left) / Math.max(1, r.width) - 0.5;
+      const dy = (e.clientY - r.top) / Math.max(1, r.height) - 0.5;
+      plot.style.setProperty("--ry", `${(dx * 9).toFixed(2)}deg`);
+      plot.style.setProperty("--rx", `${(-dy * 7).toFixed(2)}deg`);
+      reset(plot);
+    });
+    fleet.addEventListener("pointerleave", () => reset(null));
+  }
+
   /* ---------------------------------------------------------- topbar + hero */
 
   function renderTopbar() {
@@ -527,11 +560,16 @@
       calls: int(S.today.requests),
       cost: money(S.today.cost),
     });
-    $("#heroTitle").innerHTML = `${greeting()}, ${esc(operatorName())}<span>.</span>`;
+    $("#heroTitle").innerHTML = `<span class="h1-greet">${greeting()},</span><span class="h1-name">${esc(operatorName())}<i>.</i><svg class="hero-scrawl" viewBox="0 0 300 20" preserveAspectRatio="none" aria-hidden="true"><path d="M4 13C56 5 116 4 167 8c41 3 82 4 129 1"/><path d="M12 17c47-5 103-7 148-4 31 2 60 2 88 1"/></svg></span>`;
     $("#heroText").innerHTML = `${sky} ${folga} ${todayLine}`;
     $("#chipXpText").textContent = tr("hero.xp", { n: xpToday() });
     $("#chipLive").title = tr("topbar.lastRead", { ago: ago(S.meta.router_age) });
     $("#chipProviders").title = S.providers.map((p) => `${provName(p.provider)} · ${pct(p.share)}`).join(" · ");
+    const nowD = dateObj(S.meta.now) || new Date();
+    const jan1 = new Date(nowD.getFullYear(), 0, 1);
+    const week = Math.ceil(((nowD - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+    $("#heroIssue").textContent = `Nº ${String(week).padStart(3, "0")}`;
+    $("#heroDate").textContent = longDate(nowD);
   }
 
   const operatorName = () => state.operator || state.snap?.meta?.operator || tr("perfil.operatorFallback");
@@ -568,6 +606,18 @@
     setNum($("#tcCost"), today.cost, (v) => money(v), 500);
     setNum($("#tcReqs"), today.requests, (v) => int(v), 500);
     $("#tcCache").textContent = pct(S.totals.cacheHit);
+    const stampDate = dateObj(S.today.date);
+    const stampEl = $("#tcStamp");
+    if (stampEl && stampDate) stampEl.textContent = `${String(stampDate.getDate()).padStart(2, "0")} ${monthShort(stampDate).toUpperCase()}`;
+    const week = (S.series || []).slice(-7);
+    const weekMax = Math.max(1, ...week.map((d) => d.tokens));
+    const weekTotal = week.reduce((sum, d) => sum + d.tokens, 0);
+    const weekEl = $("#tcWeek");
+    if (weekEl) weekEl.textContent = `${compact(weekTotal)} tokens`;
+    const sparkEl = $("#tcSpark");
+    if (sparkEl) {
+      sparkEl.innerHTML = week.map((d) => `<i class="${d.date === S.today.date ? "on" : ""}" style="height:${Math.max(6, (Math.log10((d.tokens || 0) + 1) / Math.log10(weekMax + 1)) * 100).toFixed(1)}%" title="${esc(longDate(d.date))} · ${compact(d.tokens)} tokens"></i>`).join("");
+    }
     const top = S.insights?.topModel;
     $("#tcModel").textContent = top ? modelName(top.model) : "—";
     $("#tcModel").title = top ? `${top.model} · ${provName(top.provider)}` : "";
@@ -645,15 +695,100 @@
 
   /* ---------------------------------------------------------- fleet */
 
-  function balloonSvg(color) {
-    return `<svg class="balloon" viewBox="0 0 40 58" fill="none" aria-hidden="true">
-      <path d="M20 2c8.8 0 15 6.2 15 14 0 7.2-5.4 12.6-11.9 14.2L20 34l-3.1-3.8C10.4 28.6 5 23.2 5 16 5 8.2 11.2 2 20 2z" fill="${color}"/>
-      <path d="M11.4 11.2c2.1-4 6.4-5.6 10-5.1-4.5 1.3-8 4.2-9.2 8.6-.8 3 .2 5.8 2 8.1-3.4-2.9-4.7-8.1-2.8-11.6z" fill="#fff" opacity=".28"/>
-      <path d="M16.9 32.6 20 36l3.1-3.4" stroke="${color}" stroke-width="1.2" opacity=".55"/>
-      <path d="M20 36v11" stroke="#7b959e" stroke-width="1"/>
-      <path d="M20 40l-4 3M20 45l4 3" stroke="#8aa0a9" stroke-width=".9" opacity=".7"/>
-      <rect x="15.5" y="47" width="9" height="7.5" rx="2" fill="#cf9a5c"/>
-      <path d="M15.5 49.3h9M15.5 52h9" stroke="#a97541" stroke-width=".7" opacity=".7"/>
+  const BUILDING_KIND = {
+    codex: "tower", claude: "archive", antigravity: "dome", "gemini-cli": "dome", gemini: "dome",
+    openrouter: "relay", nvidia: "stack", ollama: "stack", "cloudflare-ai": "stack",
+    opencode: "tower", deepseek: "tower",
+  };
+
+  function mixHex(hex, target, f) {
+    const h = String(hex || "#6a8794").replace("#", "");
+    const t = target.replace("#", "");
+    const a = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
+    const b = [0, 2, 4].map((i) => parseInt(t.slice(i, i + 2), 16) || 0);
+    return "#" + a.map((v, i) => Math.round(v + (b[i] - v) * f).toString(16).padStart(2, "0")).join("");
+  }
+
+  function buildingSvg(provider, color) {
+    const kind = BUILDING_KIND[provider] || "tower";
+    const top = mixHex(color, "#FFFFFF", .46);
+    const left = mixHex(color, "#FFFFFF", .14);
+    const right = mixHex(color, "#0F1A15", .28);
+    const ink = "#12201C";
+    const glass = "#F7F2E4";
+    const red = "#FF4B2B";
+    const s = `stroke="${ink}" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"`;
+    const shadow = `<ellipse cx="60" cy="82" rx="33" ry="5.4" fill="${ink}" opacity=".13"/>`;
+    const ground = `<path d="M20 79h80" stroke="${ink}" stroke-width="1" opacity=".32"/>`;
+
+    if (kind === "archive") {
+      return `<svg class="building" viewBox="0 0 120 92" fill="none" aria-hidden="true">${shadow}
+        <path d="M28 58v12l32 12 32-12V58L60 46z" fill="${left}" ${s}/>
+        <path d="M60 70v12l32-12V58z" fill="${right}" ${s}/>
+        <path d="M28 58l32 12 32-12-32-12z" fill="${top}" ${s}/>
+        <path d="M28 52l32-12 32 12" fill="none" stroke="${ink}" stroke-width="1" opacity=".45"/>
+        <path d="M66 75v-5a3.2 3.2 0 016.4 0v5zM75 71.6v-5a3.2 3.2 0 016.4 0v5z" fill="${glass}" opacity=".9" stroke="${ink}" stroke-width=".8"/>
+        <path d="M38 68v4M44 70.5v4" stroke="${ink}" stroke-width="1.2" opacity=".5"/>
+        <path d="M60 46V34M54 38h12" stroke="${ink}" stroke-width="1.2"/>
+        <circle cx="60" cy="33" r="2" fill="${red}"/>
+        ${ground}
+      </svg>`;
+    }
+
+    if (kind === "dome") {
+      return `<svg class="building" viewBox="0 0 120 92" fill="none" aria-hidden="true">${shadow}
+        <path d="M32 64v9a28 7 0 0056 0v-9" fill="${left}" ${s}/>
+        <ellipse cx="60" cy="64" rx="28" ry="7" fill="${top}" ${s}/>
+        <path d="M42 64a18 18 0 0136 0z" fill="${left}" ${s}/>
+        <path d="M42 64a18 18 0 0136 0" fill="none" stroke="${ink}" stroke-width="1.3"/>
+        <path d="M60 46v18M48 49.5c4 4.6 6 9.3 6 14.5M72 49.5c-4 4.6-6 9.3-6 14.5" stroke="${ink}" stroke-width=".9" opacity=".45"/>
+        <path d="M52 73v-5a4 4 0 018 0v5zM66 73v-5a4 4 0 018 0v5z" fill="${glass}" opacity=".9" stroke="${ink}" stroke-width=".8"/>
+        <path d="M60 46V36" stroke="${ink}" stroke-width="1.2"/>
+        <circle cx="60" cy="35" r="2.2" fill="${red}"/>
+        ${ground}
+      </svg>`;
+    }
+
+    if (kind === "relay") {
+      return `<svg class="building" viewBox="0 0 120 92" fill="none" aria-hidden="true">${shadow}
+        <path d="M40 78V66l20-9 20 9v12l-20 8z" fill="${left}" ${s}/>
+        <path d="M60 74v8l20-8V66z" fill="${right}" ${s}/>
+        <path d="M40 66l20 8 20-9-20-8z" fill="${top}" ${s}/>
+        <path d="M60 62V18M50 30h20M48 44h24M54 18l12 26M66 18L54 44" stroke="${ink}" stroke-width="1.2"/>
+        <path d="M45 24a21 21 0 0130 0M49 31a15 15 0 0122 0" stroke="${red}" stroke-width="1.4" opacity=".85"/>
+        <circle cx="60" cy="16" r="2.6" fill="${red}"/>
+        <path d="M52 72h16" stroke="${ink}" stroke-width="1" opacity=".45"/>
+        ${ground}
+      </svg>`;
+    }
+
+    if (kind === "stack") {
+      return `<svg class="building" viewBox="0 0 120 92" fill="none" aria-hidden="true">${shadow}
+        <path d="M32 76V64l28-12 28 12v12l-28 11z" fill="${left}" ${s}/>
+        <path d="M60 75v12l28-11V64z" fill="${right}" ${s}/>
+        <path d="M32 64l28 11 28-12-28-11z" fill="${top}" ${s}/>
+        <path d="M38 56V46l22-9 22 9v10l-22 9z" fill="${left}" ${s}/>
+        <path d="M60 55v9l22-9V45z" fill="${right}" ${s}/>
+        <path d="M38 46l22 9 22-9-22-9z" fill="${top}" ${s}/>
+        <path d="M46 38V30l14-6 14 6v8l-14 6z" fill="${left}" ${s}/>
+        <path d="M60 37v7l14-6v-8z" fill="${right}" ${s}/>
+        <path d="M46 30l14 7 14-7-14-6z" fill="${top}" ${s}/>
+        <path d="M52 68h4M68 68h4M50 50h3M68 50h3" stroke="${glass}" stroke-width="1.6" opacity=".8"/>
+        <circle cx="60" cy="21" r="2" fill="${red}"/>
+        ${ground}
+      </svg>`;
+    }
+
+    return `<svg class="building" viewBox="0 0 120 92" fill="none" aria-hidden="true">${shadow}
+      <path d="M44 78V36l16-8 16 8v42z" fill="${left}" ${s}/>
+      <path d="M60 44v42l16-8V36z" fill="${right}" ${s}/>
+      <path d="M44 36l16 8 16-8-16-8z" fill="${top}" ${s}/>
+      <path d="M64 48l7-3.5v6L64 54zM64 59l7-3.5v6L64 65zM64 70l7-3.5v6L64 76z" fill="${glass}" opacity=".9" stroke="${ink}" stroke-width=".7"/>
+      <path d="M47 50l6-3v5l-6 3zM47 61l6-3v5l-6 3z" fill="${right}" opacity=".35"/>
+      <path d="M60 28V14" stroke="${ink}" stroke-width="1.2"/>
+      <circle cx="60" cy="13" r="2.2" fill="${red}"/>
+      <path d="M44 36v42M60 44v42" stroke="${ink}" stroke-width="1" opacity=".25"/>
+      ${ground}
     </svg>`;
   }
 
@@ -677,10 +812,16 @@
     fleet.innerHTML = rows.map((p, idx) => {
       const meta = provMeta(p.provider);
       const active = state.focus === p.provider;
+      const shareText = p.share < 10 ? pct(p.share, 1) : pct(p.share, 0);
       return `<button class="provider${active ? " active" : ""}" style="--pc:${meta.color}" data-act="provider" data-key="${esc(p.provider)}" title="${esc(meta.name)} · ${pct(p.share)} dos tokens · clique para filtrar e ver o manual" aria-pressed="${active}">
-        <span class="balloon-wrap" style="animation-delay:${idx * 0.1}s">${balloonSvg(meta.color)}</span>
+        <span class="plot" aria-hidden="true">
+          <b class="plot-index">${String(idx + 1).padStart(2, "0")}</b>
+          <b class="plot-share">${shareText.replace("%", "")}<small>%</small></b>
+          <i class="plot-horizon"></i>
+          ${buildingSvg(p.provider, meta.color)}
+        </span>
         <span class="prov-main">
-          <span class="prov-top"><span class="prov-name">${esc(meta.name)}</span><span class="prov-pct">${pct(p.share, 0).replace("%", "")}<small>%</small></span></span>
+          <span class="prov-top"><span class="prov-name">${esc(meta.name)}</span><span class="prov-vendor">${esc(meta.vendor)}</span></span>
           <span class="prov-bar"><i style="width:${clamp(p.share)}%"></i></span>
           <span class="prov-meta"><span><b>${compact(p.tokens)}</b> tokens</span><span>${money(p.cost)}</span></span>
           <span class="prov-spark">${sparkline(p.provider, meta.color)}<em>14d</em></span>
@@ -763,6 +904,21 @@
     });
     if (max <= 1) {
       out += `<text class="chart-empty" x="${L + PW / 2}" y="${T + PH / 2}" text-anchor="middle">${esc(tr("atlas.noData"))}</text>`;
+    } else {
+      const peak = values.indexOf(max);
+      if (peak >= 0) {
+        const px = L + peak * (bw + gap) + bw / 2;
+        const cy = T + PH * 0.42;
+        const rx = Math.max(11, bw * 0.95);
+        const ry = Math.max(16, PH * 0.34);
+        const anchor = px > W - 92 ? "end" : "start";
+        const tx = anchor === "end" ? px - rx - 4 : px + rx + 4;
+        out += `<g class="chart-scrawl" aria-hidden="true">
+          <ellipse cx="${px.toFixed(1)}" cy="${cy.toFixed(1)}" rx="${rx.toFixed(1)}" ry="${ry.toFixed(1)}" transform="rotate(-5 ${px.toFixed(1)} ${cy.toFixed(1)})"/>
+          <ellipse cx="${(px + 1.5).toFixed(1)}" cy="${(cy - 1).toFixed(1)}" rx="${(rx + 2).toFixed(1)}" ry="${(ry + 1.5).toFixed(1)}" opacity=".4"/>
+          <text x="${tx.toFixed(1)}" y="${(cy - ry - 4).toFixed(1)}" text-anchor="${anchor}">PICO</text>
+        </g>`;
+      }
     }
     if (bucket.kind === "hours" && bucket.day === S.today.date) {
       const now = new Date();
@@ -1066,13 +1222,13 @@
     const conns = (S.connections || []).filter((c) => !(S.providers || []).some((p) => p.provider === c.provider));
     return `<div class="pane" data-pane="provedores">
       ${rows}
-      ${conns.length ? `<div style="margin:9px 6px 3px;font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:#8aa0a9;font-weight:700">Conexões sem uso no período</div>` : ""}
+      ${conns.length ? `<div style="margin:9px 6px 3px;font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700">Conexões sem uso no período</div>` : ""}
       ${conns.map((c) => {
         const ok = c.status === "active";
         return `<button class="cockpit-row" style="--pc:${provColor(c.provider)}" data-act="provider-detail" data-key="${esc(c.provider)}">
           <span class="cr-dot" style="opacity:${ok ? 1 : 0.45}"></span>
           <span class="cr-main"><b>${esc(provName(c.provider))}</b><span>${esc(c.auth || "conexão")} · ${esc(maskEmail(c.name))}</span></span>
-          <span class="cr-val"><b style="font-size:8.5px;color:${ok ? "#287d59" : "#b0603c"}">${ok ? "ativa" : c.errorCode ? `erro ${c.errorCode}` : "off"}</b><span>${esc(c.plan || "—")}</span></span>
+          <span class="cr-val"><b style="font-size:8.5px;color:${ok ? "#1D6F52" : "#8A5C0F"}">${ok ? "ativa" : c.errorCode ? `erro ${c.errorCode}` : "off"}</b><span>${esc(c.plan || "—")}</span></span>
           <span class="cr-status ${ok ? "" : "bad"}"></span>
         </button>`;
       }).join("")}
@@ -1191,28 +1347,14 @@
     return tips;
   }
 
-  function renderPipTip(initial = false) {
+  function renderPipTip() {
     const tips = pipTips();
     const tip = $("#pipTip");
-    if (!tip) return;
-    const show = (idx) => {
-      tip.textContent = tips[idx % tips.length];
-      const pip = $("#pipCompanion");
-      pip.classList.add("tip-on");
-      clearTimeout(renderPipTip._t);
-      renderPipTip._t = setTimeout(() => pip.classList.remove("tip-on"), 7800);
-    };
-    if (initial) {
-      setTimeout(() => show(state.pipIndex), 2200);
-      if (!renderPipTip._timer) {
-        renderPipTip._timer = setInterval(() => {
-          state.pipIndex = (state.pipIndex + 1) % tips.length;
-          show(state.pipIndex);
-        }, 11500);
-      }
-    } else {
-      show(state.pipIndex);
-    }
+    const pip = $("#pipCompanion");
+    if (!tip || !pip) return;
+    const text = tips[state.pipIndex % tips.length];
+    tip.textContent = text;
+    pip.setAttribute("aria-label", `Pip — abrir assistente. ${text}`);
   }
 
   /* ---------------------------------------------------------- clocks */
@@ -1297,7 +1439,7 @@
   function confetti() {
     const wrap = $("#confetti");
     if (!wrap) return;
-    const colors = ["#2f9e6b", "#f4bd4a", "#37a6c8", "#e8835f", "#8b7ad4", "#7dcf9f"];
+    const colors = ["#ff4b2b", "#c8f169", "#3e6bff", "#0f1a15", "#f4f0e5"];
     for (let i = 0; i < 34; i++) {
       const p = document.createElement("i");
       p.style.left = `${Math.random() * 100}%`;
@@ -1495,7 +1637,7 @@
     const savedLight = store.get("light", "day");
     if (savedLight === "dusk") {
       app.dataset.light = "dusk";
-      $("#lightLabel").textContent = "Noite";
+      $("#lightLabel").textContent = tr("topbar.dusk");
     }
   }
 
@@ -1850,7 +1992,7 @@
           <span class="num">${int(p.requests)}</span>
           <span class="num">${latency(p.p50)}</span>
           <span class="num">${latency(p.p95)}</span>
-          <span class="num" style="color:${p.errorRate >= 5 ? "#b0603c" : p.errorRate > 0 ? "#a9771c" : "#287d59"}">${pct(p.errorRate, 0)}</span>
+          <span class="num" style="color:${p.errorRate >= 5 ? "var(--signal-ink)" : p.errorRate > 0 ? "#8A5C0F" : "#1D6F52"}">${pct(p.errorRate, 0)}</span>
           <span class="num">${latency(p.ttftP50)}</span>
         </div>`).join("")}
       </div>
@@ -2552,14 +2694,14 @@
     let offset = 0;
     const segs = rows.map((r) => {
       const len = (r.tokens / total) * C;
-      const seg = `<circle cx="55" cy="55" r="40" fill="none" stroke="${provColor(r.key)}" stroke-width="13" stroke-dasharray="${Math.max(0.5, len).toFixed(2)} ${(C - Math.max(0.5, len)).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 55 55)"/>`;
+      const seg = `<circle cx="55" cy="55" r="40" fill="none" stroke="${provColor(r.provider || r.key)}" stroke-width="13" stroke-dasharray="${Math.max(0.5, len).toFixed(2)} ${(C - Math.max(0.5, len)).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 55 55)"/>`;
       offset += len;
       return seg;
     }).join("");
     return `<svg viewBox="0 0 110 110" aria-hidden="true">
       <circle cx="55" cy="55" r="40" fill="none" stroke="rgba(30,70,84,.06)" stroke-width="13"/>${segs}
       <text x="55" y="53" text-anchor="middle" font-family="Outfit,sans-serif" font-size="15" font-weight="700" fill="#173c49">${compact(total)}</text>
-      <text x="55" y="64" text-anchor="middle" font-family="Inter,sans-serif" font-size="7" fill="#8aa0a9">tokens</text>
+      <text x="55" y="64" text-anchor="middle" font-family="Inter,sans-serif" font-size="7" fill="#5E6A62">tokens</text>
     </svg>`;
   }
 
@@ -2580,21 +2722,21 @@
     for (let i = 0; i <= 4; i++) {
       const gy = T + (PH * i) / 4;
       grid += `<line class="grid" x1="${L}" y1="${gy.toFixed(1)}" x2="${W - R}" y2="${gy.toFixed(1)}"/>`;
-      grid += `<text class="axis" x="${L - 6}" y="${(gy + 3).toFixed(1)}" text-anchor="end">${dec(toDisplay(max * (1 - i / 4)), 2)}</text>`;
+      grid += `<text class="axis" x="${L - 6}" y="${(gy + 3).toFixed(1)}" text-anchor="end">${dec(toDisplay(max * (1 - i / 4)), max >= 10 ? 0 : 1)}</text>`;
     }
     const mid = Math.round((days / 2) * 10) / 10;
     return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
       ${grid}
-      <path d="${area}" fill="#e3a33f" opacity=".13"/>
-      <path class="line" d="${path(avg)}" stroke="#2f9e6b"/>
-      <path class="proj" d="${path(tod)}" stroke="#e3a33f"/>
-      <circle class="dot" cx="${x(pts - 1)}" cy="${y(avgCost * days)}" r="3.4" fill="#2f9e6b"/>
-      <circle class="dot" cx="${x(pts - 1)}" cy="${y(todayCost * days)}" r="3.4" fill="#e3a33f"/>
+      <path d="${area}" fill="#c8f169" opacity=".2"/>
+      <path class="line" d="${path(avg)}" stroke="#0f1a15"/>
+      <path class="proj" d="${path(tod)}" stroke="#ff4b2b"/>
+      <circle class="dot" cx="${x(pts - 1)}" cy="${y(avgCost * days)}" r="3.6" fill="#0f1a15"/>
+      <circle class="dot" cx="${x(pts - 1)}" cy="${y(todayCost * days)}" r="3.6" fill="#ff4b2b"/>
       <text class="axis" x="${L}" y="${H - 6}" text-anchor="start">hoje</text>
       <text class="axis" x="${L + PW / 2}" y="${H - 6}" text-anchor="middle">+${mid} dias</text>
       <text class="axis" x="${W - R}" y="${H - 6}" text-anchor="end">+${days} dias</text>
-      <text class="axis" x="${W - R - 2}" y="${y(avgCost * days) - 7}" text-anchor="end" fill="#2f9e6b">média ${money(avgCost * days)}</text>
-      <text class="axis" x="${W - R - 2}" y="${y(todayCost * days) + 12}" text-anchor="end" fill="#b06f1e">ritmo de hoje ${money(todayCost * days)}</text>
+      <text class="axis" x="${W - R - 2}" y="${y(avgCost * days) - 7}" text-anchor="end" fill="#0f1a15">média ${money(avgCost * days)}</text>
+      <text class="axis" x="${W - R - 2}" y="${y(todayCost * days) + 12}" text-anchor="end" fill="#C73518">ritmo de hoje ${money(todayCost * days)}</text>
     </svg>`;
   }
 
@@ -2605,11 +2747,11 @@
     return `<div class="heatmap">${Array.from({ length: 24 }, (_, h) => {
       const row = rows.find((x) => x.hour === h) || { tokens: 0, requests: 0, cost: 0 };
       const ratio = (row.tokens || 0) / max;
-      const color = `rgba(47,158,107,${(0.07 + ratio * 0.86).toFixed(2)})`;
+      const color = `rgba(255,75,43,${(0.05 + ratio * 0.87).toFixed(2)})`;
       const hot = ratio > 0.55;
       return `<div class="heat-cell${hot ? " hot" : ""}" style="background:${color}" title="${String(h).padStart(2, "0")}:00 · ${compact(row.tokens)} tokens · ${int(row.requests)} chamadas · ${money(row.cost)}">${h % 3 === 0 ? String(h).padStart(2, "0") : ""}</div>`;
     }).join("")}</div>
-    <div class="heat-legend"><span>menos</span><i style="--hc:#2f9e6b;--op:.12"></i><i style="--hc:#2f9e6b;--op:.3"></i><i style="--hc:#2f9e6b;--op:.55"></i><i style="--hc:#2f9e6b;--op:.85"></i><span>mais</span><span style="margin-left:auto">pico: ${compact(max)} tokens numa hora</span></div>`;
+    <div class="heat-legend"><span>menos</span><i style="--hc:#ff4b2b;--op:.12"></i><i style="--hc:#ff4b2b;--op:.3"></i><i style="--hc:#ff4b2b;--op:.55"></i><i style="--hc:#ff4b2b;--op:.85"></i><span>mais</span><span style="margin-left:auto">pico: ${compact(max)} tokens numa hora</span></div>`;
   }
 
   const MANUAL_TASKS = [
@@ -2661,15 +2803,14 @@
           <p>Hoje foram <b>${compact(today.tokens)} tokens</b> e <b>${money(today.cost)}</b>. A média dos dias ativos é ${compact(t.avgTokens)} tokens e ${money(t.avgCost)} por dia. O gráfico projeta os dois ritmos para você decidir antes do reset.</p>
         </div>
         <div class="side">
-          <button class="btn ghost" data-act="copy-report">Copiar relatório</button>
           <button class="btn primary" data-act="sim-days" data-days="${days === 7 ? 30 : 7}">${days === 7 ? "Projetar 30 dias" : "Voltar a 7 dias"}</button>
         </div>
       </div>
       <div class="w-kpis">
         <div class="w-kpi"><span class="k-label"><i></i>hoje</span><b>${compact(today.tokens)}</b><em>${int(today.requests)} chamadas · ${money(today.cost)}</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#3a8fd0"></i>cache</span><b>${pct(t.cacheHit)}</b><em>${compact(t.cached)} tokens reaproveitados</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#e3a33f"></i>projeção ${days}d</span><b>${money(avgCost * days)}</b><em>no ritmo de hoje: ${money(todayCost * days)}</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#8b7ad4"></i>folga Codex</span><b>${q?.available ? pct(q.week_free, 0) : "—"}</b><em>${q?.available ? `reset em ${until(q.week_reset)}` : "cota não exposta"}</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#3e6bff"></i>cache</span><b>${pct(t.cacheHit)}</b><em>${compact(t.cached)} tokens reaproveitados</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#ff4b2b"></i>projeção ${days}d</span><b>${money(avgCost * days)}</b><em>no ritmo de hoje: ${money(todayCost * days)}</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#c8f169"></i>folga Codex</span><b>${q?.available ? pct(q.week_free, 0) : "—"}</b><em>${q?.available ? `reset em ${until(q.week_reset)}` : "cota não exposta"}</em></div>
       </div>
       <div class="w-grid three">
         <div class="w-card">
@@ -2705,7 +2846,7 @@
               <span class="num">${int(d.requests)}</span>
               <span class="num">${compact(d.tokens)}</span>
               <span class="num">${money(d.cost)}</span>
-              <span class="num" style="color:${delta > 0 ? "#b0603c" : "#287d59"}">${delta > 0 ? "▲" : "▼"} ${pct(Math.abs(delta), 0)}</span>
+              <span class="num" style="color:${delta > 0 ? "var(--signal-ink)" : "var(--blue-ink)"}">${delta > 0 ? "▲" : "▼"} ${pct(Math.abs(delta), 0)}</span>
             </div>`;
           }).join("")}
         </div>
@@ -2761,9 +2902,9 @@
       </div>
       <div class="w-kpis">
         <div class="w-kpi"><span class="k-label"><i></i>contexto médio</span><b>${pct(avgCtx, 0)}</b><em>${pressure.filter((s) => s.context_pct >= 50).length} sessões acima de 50%</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#3a8fd0"></i>mensagens</span><b>${int(msgs)}</b><em>${(msgs / Math.max(1, all.length)).toFixed(1).replace(".", ",")} por sessão</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#8b7ad4"></i>tool calls</span><b>${int(calls)}</b><em>${(calls / Math.max(1, all.length)).toFixed(0)} por sessão</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#e3a33f"></i>leituras dup.</span><b>${sumDup() ? compact(sumDup()) : "0"}</b><em>${(S.qoder?.duplicates || []).length} arquivos relidos</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#3e6bff"></i>mensagens</span><b>${int(msgs)}</b><em>${(msgs / Math.max(1, all.length)).toFixed(1).replace(".", ",")} por sessão</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#0f1a15"></i>tool calls</span><b>${int(calls)}</b><em>${(calls / Math.max(1, all.length)).toFixed(0)} por sessão</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#ff4b2b"></i>leituras dup.</span><b>${sumDup() ? compact(sumDup()) : "0"}</b><em>${(S.qoder?.duplicates || []).length} arquivos relidos</em></div>
       </div>
       <div class="w-toolbar">
         <label class="w-search">${railIcon("sessoes")}<input id="sessionSearch" value="${esc(q)}" placeholder="Buscar sessão, projeto ou modelo…" aria-label="Buscar sessões"></label>
@@ -2776,23 +2917,23 @@
           <div class="w-table sessions-table">
             <div class="w-row head" style="grid-template-columns:minmax(0,1.65fr) minmax(0,1fr) 42px 48px 40px 62px"><span>sessão</span><span>contexto</span><span>msg</span><span>tools</span><span>dup</span><span>vista</span></div>
             ${rows.map((s) => {
-              const ctxSeg = (s.context || []).filter((c) => c.name !== "free_space").map((c) => `<i style="width:${clamp(c.pct)}%"></i>`).join("");
+              const ctxSeg = (s.context || []).map((c) => `<i style="width:${clamp(c.pct)}%;background:${ctxColor(c.name)}"></i>`).join("");
               return `<button class="w-row" data-session-row data-search="${esc(`${s.title} ${s.project} ${s.model}`)}" data-act="session" data-id="${esc(s.id)}" style="grid-template-columns:minmax(0,1.65fr) minmax(0,1fr) 42px 48px 40px 62px">
                 <span class="r-main" style="display:block"><b style="display:block">${esc(s.title)}</b><span>${esc(s.project)} · ${esc(s.model)}<em class="r-when"> · ${esc(rel(s.updated_at))}</em></span></span>
-                <span><span class="ctx-bar">${ctxSeg}</span><small style="font-size:8px;color:#8aa0a9">${pct(s.context_pct, 0)}</small></span>
+                <span><span class="ctx-bar">${ctxSeg}</span><small style="font-family:var(--mono);font-size:8px;color:var(--muted)">${pct(s.context_pct, 0)}</small></span>
                 <span class="num">${int(s.messages)}</span>
                 <span class="num">${int(s.tool_calls)}</span>
-                <span class="num" style="color:${s.duplicates ? "#b0603c" : "#8aa0a9"}">${int(s.duplicates)}</span>
-                <span class="num" style="font-size:8px;font-family:Inter,sans-serif;font-weight:500;color:#8aa0a9">${esc(rel(s.updated_at))}</span>
+                <span class="num" style="color:${s.duplicates ? "var(--signal-ink)" : "var(--muted)"}">${int(s.duplicates)}</span>
+                <span class="num" style="font-size:8px;font-family:var(--mono);font-weight:500;color:var(--muted)">${esc(rel(s.updated_at))}</span>
               </button>`;
             }).join("") || `<div class="w-empty">Nenhuma sessão encontrada para “${esc(q)}”.</div>`}
           </div>
         </div>
         <div class="w-card">
           <div class="w-card-head"><div><h3>Onde o contexto vai</h3><p>média entre as sessões</p></div></div>
-          <div class="w-legend">${ctx.map((c, i) => `<div class="lg-row"><i style="background:${["#8ab7c9", "#6c9fb8", "#5c8fa9", "#2f9e6b", "#e3a33f", "#cfe2e9"][i % 6]}"></i><span>${esc(c.name.replace(/_/g, " "))}</span><b>${pct(c.pct, 0)}</b></div>`).join("")}</div>
+          <div class="w-legend">${ctx.map((c) => `<div class="lg-row"><i style="background:${ctxColor(c.name)}"></i><span>${esc(c.name.replace(/_/g, " "))}</span><b>${pct(c.pct, 0)}</b></div>`).join("")}</div>
           <div class="w-card-head" style="margin:14px 0 6px"><div><h3 style="font-size:11px">Sob pressão</h3><p>maiores contextos agora</p></div></div>
-          ${pressure.map((s) => `<button class="dup-item" style="width:100%;text-align:left" data-act="session" data-id="${esc(s.id)}"><span class="dup-file"><b style="font-family:Inter,sans-serif;font-size:9px;font-weight:600">${esc(s.title)}</b><span>${esc(s.project)}</span></span><span class="dup-cost" style="color:#b06f1e">${pct(s.context_pct, 0)}</span></button>`).join("") || `<div class="w-empty">Sem sessões.</div>`}
+          ${pressure.map((s) => `<button class="dup-item" style="width:100%;text-align:left" data-act="session" data-id="${esc(s.id)}"><span class="dup-file"><b style="font-family:Inter,sans-serif;font-size:9px;font-weight:600">${esc(s.title)}</b><span>${esc(s.project)}</span></span><span class="dup-cost" style="color:var(--signal-ink)">${pct(s.context_pct, 0)}</span></button>`).join("") || `<div class="w-empty">Sem sessões.</div>`}
           <div class="drw-note">Contexto alto não é só custo: ele reduz a margem para a próxima mensagem e força compactação. Abra a sessão para ver a composição.</div>
         </div>
       </div>
@@ -2822,9 +2963,9 @@
       </div>
       <div class="w-kpis">
         <div class="w-kpi"><span class="k-label"><i></i>skills carregadas</span><b>${int(skills.total)}</b><em>${int(skills.included)} incluídas no contexto</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#3a8fd0"></i>artefatos</span><b>${int(art.images + art.attachments + art.fileChanges)}</b><em>${int(art.images)} imagens · ${int(art.fileChanges)} mudanças</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#e3a33f"></i>reprocessado</span><b>${compact(wasted)}</b><em>${pct((wasted / Math.max(1, S.totals.input)) * 100)} do input do período</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#8b7ad4"></i>plugins</span><b>${int(qinv.pluginsEnabled || 0)}/${int(qinv.plugins || 0)}</b><em>Qoder · Codex: ${int(codex.pluginsEnabled || 0)}/${int(codex.plugins || 0)}</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:var(--blue)"></i>artefatos</span><b>${int(art.images + art.attachments + art.fileChanges)}</b><em>${int(art.images)} imagens · ${int(art.fileChanges)} mudanças</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:var(--signal)"></i>reprocessado</span><b>${compact(wasted)}</b><em>${pct((wasted / Math.max(1, S.totals.input)) * 100)} do input do período</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:var(--ink)"></i>plugins</span><b>${int(qinv.pluginsEnabled || 0)}/${int(qinv.plugins || 0)}</b><em>Qoder · Codex: ${int(codex.pluginsEnabled || 0)}/${int(codex.plugins || 0)}</em></div>
       </div>
       <div class="w-grid">
         <div class="w-card">
@@ -2854,7 +2995,7 @@
       </div>
       <div class="w-card" style="margin-top:12px">
         <div class="w-card-head"><div><h3>Fila de higiene</h3><p>sinais que custam contexto ou disponibilidade</p></div><span class="pill ${hygiene.length ? "warn" : "ok"}">${hygiene.length} itens</span></div>
-        ${hygiene.map((s) => `<button class="w-row" style="grid-template-columns:minmax(0,1.3fr) minmax(0,2fr) auto;width:100%;text-align:left" data-act="ask" data-q="${esc(`Como resolvo: ${s.title}?`)}"><span class="r-main"><b>${esc(s.title)}</b><span>${s.level === "warn" ? "atenção" : "nota"}</span></span><span class="r-txt" style="font-size:8.5px;color:#6a8794;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(String(s.detail).slice(0, 110))}</span><span class="tag-mini ${s.level === "warn" ? "warn" : ""}">${s.level === "warn" ? "agir" : "ok"}</span></button>`).join("") || `<div class="w-empty">Nada na fila.</div>`}
+        ${hygiene.map((s) => `<button class="w-row" style="grid-template-columns:minmax(0,1.3fr) minmax(0,2fr) auto;width:100%;text-align:left" data-act="ask" data-q="${esc(`Como resolvo: ${s.title}?`)}"><span class="r-main"><b>${esc(s.title)}</b><span>${s.level === "warn" ? "atenção" : "nota"}</span></span><span class="r-txt" style="font-size:8.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(String(s.detail).slice(0, 110))}</span><span class="tag-mini ${s.level === "warn" ? "warn" : ""}">${s.level === "warn" ? "agir" : "ok"}</span></button>`).join("") || `<div class="w-empty">Nada na fila.</div>`}
       </div>
     `;
   };
@@ -2873,7 +3014,7 @@
       if (qc?.available) bits.push(line(`Claude: <b>${pct(qc.week_free)}</b> de folga semanal e <b>${pct(qc.credit_free || 0)}</b> de crédito. O 429 é de crédito, não de janela.`));
       bits.push(line(`Ritmo Codex: <b>${pct(qd?.pace || 0)}</b> ao dia contra meta de <b>${pct(qd?.target || 0)}</b>. ${qd && qd.pace < qd.target ? "Você está abaixo da meta; há espaço." : "Você está acima da meta; reduza o ritmo até o reset."}`));
       bits.push(line("Para preservar: reuse a mesma sessão (cache), evite anexos grandes e desligue plugins/MCP que não usa."));
-      return `<b>Folga real da frota</b><ul>${bits.join("")}</ul><span style="display:block;margin-top:6px;color:#7b959e">Clique no sol para alternar as janelas. Duplo clique abre o detalhamento.</span>`;
+      return `<b>Folga real da frota</b><ul>${bits.join("")}</ul><span style="display:block;margin-top:6px;color:var(--muted)">Clique no sol para alternar as janelas. Duplo clique abre o detalhamento.</span>`;
     }
     if (/qual ia|qual usar|melhor ia|tarefa|comparar|escolher|decis|manual/.test(q)) {
       const pick = MANUAL_TASKS.slice(0, 4).map((t) => line(`<b>${esc(t.label)}</b> → ${esc(provName(t.pick))}${t.alt ? ` (alternativa: ${esc(provName(t.alt))})` : ""}`)).join("");
@@ -3049,7 +3190,7 @@
             <div>
               <h4>${esc(task.label)} → ${esc(provName(task.pick))}</h4>
               <p>${esc(task.why)}</p>
-              <div class="drw-note" style="margin-top:9px;background:rgba(232,163,63,.08);border-color:rgba(232,163,63,.18)"><b style="color:#94631a">Atenção:</b> ${esc(task.watch)}</div>
+              <div class="drw-note warn" style="margin-top:9px"><b>Atenção:</b> ${esc(task.watch)}</div>
               <div class="drw-actions" style="margin-top:10px">
                 <button class="btn primary" data-act="provider-detail" data-key="${esc(task.pick)}">Abrir manual do ${esc(provName(task.pick))}</button>
                 <button class="btn ghost" data-act="ask" data-q="${esc(`Como usar ${provName(task.pick)} para ${task.label.toLowerCase()} sem estourar a cota?`)}">Perguntar ao Oráculo</button>
@@ -3059,8 +3200,8 @@
               <b>rota recomendada</b>
               <div class="run" style="--pc:${provColor(task.pick)}"><i></i><b>${esc(provName(task.pick))}</b><span>${esc(quotaBadge(task.pick).text)}</span></div>
               <div class="run" style="--pc:${provColor(task.alt || task.pick)}"><i></i><b>${esc(task.alt ? provName(task.alt) : "sem alternativa local")}</b><span>${esc(task.alt ? quotaBadge(task.alt).text : "—")}</span></div>
-              <div class="run"><i style="background:#8aa0a9"></i><b>uso atual</b><span>${pickUsage ? `${pct(pickUsage.share, 0)} do volume` : "sem uso"}</span></div>
-              <div class="run"><i style="background:#8aa0a9"></i><b>custo no período</b><span>${pickUsage ? money(pickUsage.cost) : "—"}</span></div>
+              <div class="run"><i style="background:var(--muted)"></i><b>uso atual</b><span>${pickUsage ? `${pct(pickUsage.share, 0)} do volume` : "sem uso"}</span></div>
+              <div class="run"><i style="background:var(--muted)"></i><b>custo no período</b><span>${pickUsage ? money(pickUsage.cost) : "—"}</span></div>
             </div>
           </div>
           ${pickKb ? `<div class="drw-note" style="margin-top:10px">${esc(pickKb.verdict)}${altKb ? ` <b>Alternativa:</b> ${esc(altKb.verdict)}` : ""}</div>` : ""}
@@ -3125,9 +3266,9 @@
       </div>
       <div class="w-kpis">
         <div class="w-kpi"><span class="k-label"><i></i>XP total</span><b>${int(xp.xp)}</b><em>${xp.today} hoje · faltam ${int(Math.max(0, lv.next - xp.xp))} para o próximo</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#3a8fd0"></i>tokens</span><b>${compact(S.totals.tokens)}</b><em>${int(S.totals.requests)} chamadas</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#e3a33f"></i>cache</span><b>${pct(S.totals.cacheHit)}</b><em>${compact(S.totals.cached)} reaproveitados</em></div>
-        <div class="w-kpi"><span class="k-label"><i style="background:#8b7ad4"></i>diagnósticos revisados</span><b>${state.reviewed.size}/${(S.errors || []).length}</b><em>abertos no radar</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:var(--blue)"></i>tokens</span><b>${compact(S.totals.tokens)}</b><em>${int(S.totals.requests)} chamadas</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:var(--lime)"></i>cache</span><b>${pct(S.totals.cacheHit)}</b><em>${compact(S.totals.cached)} reaproveitados</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:var(--signal)"></i>diagnósticos revisados</span><b>${state.reviewed.size}/${(S.errors || []).length}</b><em>abertos no radar</em></div>
       </div>
       <div class="w-grid three">
         <div class="w-card">
@@ -3137,7 +3278,7 @@
         <div class="w-card">
           <div class="w-card-head"><div><h3>Seu nível</h3><p>progresso local</p></div><span class="pill">${lv.level}</span></div>
           <div class="proj-read" style="margin-bottom:10px"><b>${lv.level}</b><span>${esc(lv.name)} · ${int(xp.xp)} / ${int(lv.next)} XP</span></div>
-          <div class="w-bar" style="height:8px"><i style="width:${lv.progress}%;--bc:#e3a33f"></i></div>
+          <div class="w-bar" style="height:8px"><i style="width:${lv.progress}%;--bc:var(--signal)"></i></div>
           <div class="proj-line" style="margin-top:10px"><span>Próximo nível</span><b style="font-size:10px">${int(Math.max(0, lv.next - xp.xp))} XP</b></div>
           <div class="proj-line"><span>XP de hoje</span><b style="font-size:10px">+${xp.today}</b></div>
           <div class="drw-note" style="margin-top:10px">Ganhe XP completando missões no Atlas, revisando diagnósticos e explorando alas. O progresso fica no seu navegador.</div>
@@ -3156,6 +3297,7 @@
     const S = state.snap;
     const votes = state.votes || {};
     const totalVotes = Object.values(votes).reduce((a, b) => a + (Number(b) || 0), 0);
+    const supported = ROADMAP.filter((r) => Number(votes[r.key] || 0) > 0).length;
     return `
       <div class="w-hero">
         <div class="big">0<small> dados na nuvem</small></div>
@@ -3164,10 +3306,15 @@
       </div>
       <div class="guild-grid">
         <div class="guild-cta">
-          <span class="eyebrow" style="font-size:8px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#2f8060">próximo capítulo</span>
+          <span class="eyebrow" style="font-size:8px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--signal-ink)">próximo capítulo</span>
           <h3>Abra o Rune com a comunidade.</h3>
           <p>O repositório será publicado com o núcleo local, o Manual da Frota e os coletores. Issues para bugs, Discussions para ideias e Wiki para manuais de cada IA. O login GitHub será opcional e nunca vai ler seus dados locais.</p>
           <div class="row"><button class="btn primary" data-act="ask" data-q="Como contribuir com o Rune e o que publicar primeiro?">Como contribuir</button><button class="btn ghost" data-act="copy-diag">Copiar diagnóstico</button><button class="btn ghost" data-act="export-json">Exportar</button></div>
+          <div class="w-subgrid guild-stats">
+            <div class="w-mini"><span>apoios locais</span><b>${int(totalVotes)}</b><em>neste navegador</em></div>
+            <div class="w-mini"><span>itens apoiados</span><b>${supported}/${ROADMAP.length}</b><em>no roadmap</em></div>
+            <div class="w-mini"><span>dados na nuvem</span><b>0</b><em>nada sai da máquina</em></div>
+          </div>
           <div class="drw-note" style="margin-top:2px">${totalVotes ? `${totalVotes} apoio${totalVotes > 1 ? "s" : ""} registrado${totalVotes > 1 ? "s" : ""} neste navegador.` : "Ainda sem apoios neste navegador. Vote no roadmap abaixo."}</div>
         </div>
         <div class="w-card">
@@ -3217,7 +3364,7 @@
             ${keys.map((k) => {
               const c = connFor(k);
               const st = providerStatus(k);
-              return `<div class="w-row" style="grid-template-columns:minmax(0,1fr) 90px 110px 80px"><span class="r-main"><b>${esc(provName(k))}</b><span>${esc(c?.auth || "—")} · ${esc(maskEmail(c?.name || "—"))}</span></span><span class="tag-mini ${st.cls}">${esc(st.text)}</span><span class="num" style="font-size:8px;font-family:Inter,sans-serif;font-weight:500;color:#8aa0a9">${esc(c?.plan || "—")}</span><span class="num" style="font-size:8px;font-family:Inter,sans-serif;font-weight:500;color:#8aa0a9">${c?.expiresAt ? `expira ${until(c.expiresAt)}` : "—"}</span></div>`;
+              return `<div class="w-row" style="grid-template-columns:minmax(0,1fr) 90px 110px 80px"><span class="r-main"><b>${esc(provName(k))}</b><span>${esc(c?.auth || "—")} · ${esc(maskEmail(c?.name || "—"))}</span></span><span class="tag-mini ${st.cls}">${esc(st.text)}</span><span class="num" style="font-size:8px;font-family:Inter,sans-serif;font-weight:500;color:var(--muted)">${esc(c?.plan || "—")}</span><span class="num" style="font-size:8px;font-family:Inter,sans-serif;font-weight:500;color:var(--muted)">${c?.expiresAt ? `expira ${until(c.expiresAt)}` : "—"}</span></div>`;
             }).join("")}
           </div>
         </div>
@@ -3270,10 +3417,10 @@
       <div class="fleet-grid">
         ${errors.length ? errors.map((e, i) => {
           const isReviewed = state.reviewed.has(`${e.provider}|${e.model}|${e.diagnosis?.title}`);
-          const tone = e.diagnosis?.tone === "bad" ? "#d8584a" : "#e3a33f";
-          return `<article class="help-card" style="border-left:3px solid ${tone}">
+          const tone = e.diagnosis?.tone === "bad" ? "var(--signal)" : "#e6a62d";
+          return `<article class="help-card" style="border-left:2px solid ${tone}">
             <div class="w-card-head"><div><h3>${esc(e.diagnosis?.title || "Erro")}</h3><p>${esc(provName(e.provider))} · ${esc(e.model || "—")} · ${e.count}× · ${esc(rel(e.last))}</p></div><span class="tag-mini ${isReviewed ? "ok" : "bad"}">${isReviewed ? "revisado" : "aberto"}</span></div>
-            <p style="font-family:JetBrains Mono,monospace;font-size:8px;line-height:1.5;background:rgba(30,70,84,.04);padding:7px 9px;border-radius:7px;margin-bottom:8px;max-height:52px;overflow:hidden">${esc(e.message)}</p>
+            <p class="err-msg">${esc(e.message)}</p>
             <div class="why"><b>Causa provável:</b> ${esc(e.diagnosis?.cause || "—")}<br><b>Correção:</b> ${esc(e.diagnosis?.fix || "—")}</div>
             <div class="drw-actions"><button class="btn primary" data-act="error-copy" data-i="${i}">Copiar prompt</button><button class="btn ghost" data-act="error-detail" data-i="${i}">Detalhes</button></div>
           </article>`;

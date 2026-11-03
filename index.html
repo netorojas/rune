@@ -3,10 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#F4F0E5">
 <title>Rune · Atlas</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -34,7 +32,27 @@
         <div class="sky-aurora"></div>
         <div class="dusk-overlay"></div>
         <div class="vignette"></div>
+        <svg class="scene-mark" viewBox="0 0 620 300" fill="none" aria-hidden="true">
+          <g stroke="currentColor" stroke-width="1.1" opacity=".62">
+            <path d="M-30 232c74-9 116-38 154-74 31-29 61-42 100-44 45-2 77 16 103 46 22 26 51 41 92 45 42 4 82-7 121-30"/>
+            <path d="M-20 254c80-8 124-36 164-74 28-27 58-42 96-44 47-2 80 18 105 49 21 25 50 39 89 43 44 4 88-5 128-28"/>
+            <path d="M58 286c52-4 91-21 129-51 33-26 58-40 96-38 31 1 56 15 78 38 25 26 52 38 88 42 31 4 64-1 93-12"/>
+            <path d="M150 300c33-1 60-10 88-30 24-17 44-25 71-21 23 4 39 16 54 32 12 13 26 20 42 24"/>
+            <path d="M286 172c19-10 39-8 56 4 12 9 17 23 13 37-5 18-22 27-42 24-20-3-32-17-31-35 1-14 6-24 17-33"/>
+            <path d="M300 190c10-5 22-3 30 4 6 6 8 15 5 23-4 10-14 14-25 11-10-3-15-11-13-21 1-7 4-12 10-17"/>
+          </g>
+          <g stroke="currentColor" stroke-width="1" opacity=".4">
+            <path d="M520 44v28M506 58h28"/>
+            <circle cx="520" cy="58" r="8"/>
+            <path d="M420 196v18M411 205h18"/>
+          </g>
+        </svg>
+        <div class="scene-rule"></div>
+        <div class="scene-reg r1"></div>
+        <div class="scene-reg r2"></div>
       </div>
+
+      <div class="grid-guide" aria-hidden="true"></div>
 
       <canvas id="sceneFx" width="1440" height="900" aria-hidden="true"></canvas>
 
@@ -129,6 +147,10 @@
       <main class="dashboard">
         <section class="hero" id="hero">
           <div class="hero-copy">
+            <div class="hero-meta">
+              <span>Rune — Field Notes</span>
+              <span><b id="heroIssue">Nº 003</b> · <b id="heroDate">03 nov 2026</b></span>
+            </div>
             <div class="hero-strip">
               <span class="hero-pill" id="heroPill"><i class="dot-live"></i> terça, 3 nov · modo local</span>
               <div class="hero-chips">
@@ -146,17 +168,27 @@
             <p id="heroText">Seu céu está limpo. A semana ainda tem <b>68% de folga</b> e o ritmo está sob controle.</p>
           </div>
           <div class="today-cluster" aria-label="Resumo de hoje">
+            <div class="tc-head">
+              <span id="tcLabel">hoje · tokens</span>
+              <span class="tc-stamp" id="tcStamp">03 NOV</span>
+            </div>
             <div class="tc-main">
-              <div>
-                <span id="tcLabel">hoje · tokens</span>
+              <div class="tc-figure">
                 <div class="tc-big" id="tcTokens">0<small>tokens</small></div>
               </div>
               <span class="tc-delta" id="tcDelta">—</span>
             </div>
-            <div class="tc-item"><em data-i18n="common.cost">custo</em><b id="tcCost">—</b></div>
-            <div class="tc-item"><em data-i18n="common.calls">chamadas</em><b id="tcReqs">—</b></div>
-            <div class="tc-item"><em data-i18n="common.cache">cache</em><b id="tcCache">—</b></div>
-            <div class="tc-item"><em data-i18n="common.model">modelo top</em><b id="tcModel">—</b></div>
+            <div class="tc-mid">
+              <div class="tc-mid-head"><span>últimos 7 dias</span><b id="tcWeek">—</b></div>
+              <div class="tc-spark" id="tcSpark"></div>
+            </div>
+            <div class="tc-grid">
+              <div class="tc-item"><em data-i18n="common.cost">custo</em><b id="tcCost">—</b></div>
+              <div class="tc-item"><em data-i18n="common.calls">chamadas</em><b id="tcReqs">—</b></div>
+              <div class="tc-item"><em data-i18n="common.cache">cache</em><b id="tcCache">—</b></div>
+              <div class="tc-item"><em data-i18n="common.model">modelo top</em><b id="tcModel">—</b></div>
+            </div>
+            <div class="tc-foot"><span>leitura verificada no seu disco</span><i></i></div>
           </div>
         </section>
 
