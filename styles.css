@@ -1752,7 +1752,7 @@ kbd {
 .vote.on { background: rgba(47, 158, 107, .14); color: #287d59; }
 
 /* Perfil */
-.profile-grid { display: grid; grid-template-columns: 300px 1fr; gap: 12px; }
+.profile-grid { display: grid; grid-template-columns: 300px 1fr; gap: 12px; align-items: start; }
 .profile-card { padding: 16px; border-radius: 16px; background: rgba(255, 255, 255, .8); border: 1px solid rgba(30, 70, 84, .07); }
 .profile-id { display: flex; align-items: center; gap: 11px; }
 .profile-avatar { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; font-family: Outfit, sans-serif; font-size: 20px; font-weight: 600; color: #fff; background: linear-gradient(145deg, #3a9e8c, #3a7fc0); box-shadow: 0 0 0 3px rgba(255, 255, 255, .8); }
