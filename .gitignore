@@ -1,0 +1,8 @@
+.rune-data/
+data/
+__pycache__/
+*.py[cod]
+.DS_Store
+*.log
+rune.pid
+.env

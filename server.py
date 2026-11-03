@@ -1,0 +1,1090 @@
+#!/usr/bin/env python3
+"""Rune Live — protótipo local-first.
+
+Lê apenas metadados locais (9router, Qoder Desktop, coletor ~/.ai-usage) em
+modo somente-leitura. Nunca devolve chaves, access tokens ou conteúdo de
+prompts. Escuta exclusivamente em 127.0.0.1.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import socket
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+BASE = Path(__file__).resolve().parent
+ASSETS = BASE / "assets"
+AI_USAGE = Path(os.environ.get("AI_USAGE_HOME") or (Path.home() / ".ai-usage")).expanduser()
+DATA_FILE = AI_USAGE / "data.json"
+COLLECT = AI_USAGE / "collect.py"
+COLLECT_LOCAL = BASE / "collector" / "collect.py"
+if not COLLECT.exists() and COLLECT_LOCAL.exists():
+    COLLECT = COLLECT_LOCAL
+ROUTER_DB = Path.home() / ".9router" / "db" / "data.sqlite"
+QODER_DB = Path.home() / "Library" / "Application Support" / "com.qoder.app.stable" / "main.sqlite"
+HOST = os.environ.get("RUNE_HOST", "127.0.0.1")
+PORT = int(os.environ.get("RUNE_PORT", "8770"))
+
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_-]{6,}|Bearer\s+[A-Za-z0-9._-]{8,}|ya29\.[A-Za-z0-9._-]+|sk-ant-[A-Za-z0-9._-]+)")
+_refresh_lock = threading.Lock()
+
+
+def _ro(path: Path) -> sqlite3.Connection | None:
+    if not path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.Error:
+        return None
+
+
+def _iso(ms: int | None) -> str | None:
+    if not ms:
+        return None
+    try:
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone().isoformat()
+    except (ValueError, OSError):
+        return None
+
+
+def _hhmm(raw: str | None) -> str:
+    if not raw:
+        return ""
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone().strftime("%H:%M")
+    except ValueError:
+        return raw[11:16]
+
+
+def _clean(text: str | None, limit: int = 260) -> str:
+    if not text:
+        return ""
+    s = EMAIL_RE.sub("•••@•••", str(text))
+    s = SECRET_RE.sub("•••", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:limit]
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _tokens(prompt: int | float, completion: int | float) -> int:
+    return int(prompt or 0) + int(completion or 0)
+
+
+def _error_message(obj, depth: int = 0) -> str:
+    if depth > 5 or obj is None:
+        return ""
+    if isinstance(obj, str):
+        try:
+            return _error_message(json.loads(obj), depth + 1)
+        except ValueError:
+            return obj.strip()
+    if isinstance(obj, dict):
+        for key in ("message", "detail", "title", "error"):
+            if key in obj:
+                msg = _error_message(obj[key], depth + 1)
+                if msg:
+                    return msg
+        if isinstance(obj.get("errors"), list) and obj["errors"]:
+            return _error_message(obj["errors"][0], depth + 1)
+    if isinstance(obj, list) and obj:
+        return _error_message(obj[0], depth + 1)
+    return ""
+
+
+def _pct(part: float, whole: float) -> float:
+    return round(part / whole * 100, 1) if whole else 0.0
+
+
+def _operator_name() -> str:
+    env = (os.environ.get("RUNE_OPERATOR") or "").strip()
+    if env:
+        return env[:24]
+    try:
+        import pwd
+        full = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
+        if full:
+            return full.split()[0][:24]
+    except (ImportError, KeyError, OSError):
+        pass
+    name = Path.home().name.lstrip(".")
+    return name[:24] if name else "operador"
+
+
+def load_router_usage(days: int = 14) -> dict:
+    """Série diária e chamadas recentes direto do banco do 9router."""
+    out = {"days": [], "recent": [], "providers": {}, "models": {}, "errors": [], "today": {}, "slo": {"providers": [], "overall": {}, "window": "7d"}}
+    conn = _ro(ROUTER_DB)
+    if conn is None:
+        return out
+    try:
+        raw_days: dict[str, dict] = {}
+        for row in conn.execute("SELECT dateKey, data FROM usageDaily"):
+            try:
+                raw_days[row["dateKey"]] = json.loads(row["data"] or "{}")
+            except ValueError:
+                continue
+
+        end = datetime.now().astimezone().date()
+        by_model: dict[tuple[str, str], dict] = {}
+        by_provider: dict[str, dict] = {}
+        for i in range(days - 1, -1, -1):
+            day = end - timedelta(days=i)
+            key = day.isoformat()
+            d = raw_days.get(key, {})
+            prompt = int(d.get("promptTokens", 0))
+            completion = int(d.get("completionTokens", 0))
+            cached = int(d.get("cachedTokens", 0))
+            entry = {
+                "date": key,
+                "label": day.strftime("%d/%m"),
+                "weekday": ["S", "T", "Q", "Q", "S", "S", "D"][day.weekday()],
+                "requests": int(d.get("requests", 0)),
+                "input": prompt,
+                "output": completion,
+                "cached": cached,
+                "tokens": prompt + completion,
+                "cost": round(float(d.get("cost", 0)), 4),
+                "providers": {},
+            }
+            for prov, pdata in (d.get("byProvider") or {}).items():
+                pt = int(pdata.get("promptTokens", 0))
+                ct = int(pdata.get("completionTokens", 0))
+                ca = int(pdata.get("cachedTokens", 0))
+                entry["providers"][prov] = {
+                    "requests": int(pdata.get("requests", 0)),
+                    "tokens": pt + ct,
+                    "input": pt,
+                    "cached": ca,
+                    "cost": round(float(pdata.get("cost", 0)), 4),
+                }
+                agg = by_provider.setdefault(prov, {"provider": prov, "requests": 0, "tokens": 0, "input": 0, "cached": 0, "cost": 0.0})
+                agg["requests"] += int(pdata.get("requests", 0))
+                agg["tokens"] += pt + ct
+                agg["input"] += pt
+                agg["cached"] += ca
+                agg["cost"] += float(pdata.get("cost", 0))
+            for raw_key, mdata in (d.get("byModel") or {}).items():
+                model = mdata.get("rawModel") or raw_key.split("|", 1)[0]
+                prov = mdata.get("provider") or (raw_key.split("|") + [""])[1]
+                agg = by_model.setdefault((prov, model), {"provider": prov, "model": model, "requests": 0, "tokens": 0, "input": 0, "cached": 0, "cost": 0.0})
+                pt = int(mdata.get("promptTokens", 0))
+                ct = int(mdata.get("completionTokens", 0))
+                agg["requests"] += int(mdata.get("requests", 0))
+                agg["tokens"] += pt + ct
+                agg["input"] += pt
+                agg["cached"] += int(mdata.get("cachedTokens", 0))
+                agg["cost"] += float(mdata.get("cost", 0))
+            out["days"].append(entry)
+
+        start_date = end - timedelta(days=days - 1)
+        hours: dict[str, list[dict]] = {}
+        for row in conn.execute("SELECT timestamp, provider, promptTokens, completionTokens, cost, tokens FROM usageHistory"):
+            raw_ts = row["timestamp"]
+            if not raw_ts:
+                continue
+            try:
+                ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone()
+            except ValueError:
+                continue
+            if ts.date() < start_date:
+                continue
+            key = ts.date().isoformat()
+            bucket = hours.setdefault(key, [
+                {"hour": h, "requests": 0, "tokens": 0, "cost": 0.0, "providers": {}} for h in range(24)
+            ])
+            try:
+                tok = json.loads(row["tokens"] or "{}")
+            except ValueError:
+                tok = {}
+            total = _tokens(row["promptTokens"], row["completionTokens"])
+            ent = bucket[ts.hour]
+            ent["requests"] += 1
+            ent["tokens"] += total
+            ent["cost"] = round(ent["cost"] + float(row["cost"] or 0), 5)
+            prov = row["provider"]
+            p = ent["providers"].setdefault(prov, {"requests": 0, "tokens": 0, "cost": 0.0})
+            p["requests"] += 1
+            p["tokens"] += total
+            p["cost"] = round(p["cost"] + float(row["cost"] or 0), 5)
+        out["hours"] = hours
+
+        out["today"] = out["days"][-1] if out["days"] else {}
+        out["providers"] = sorted(by_provider.values(), key=lambda x: x["tokens"], reverse=True)
+        out["models"] = sorted(by_model.values(), key=lambda x: x["tokens"], reverse=True)
+        for p in out["providers"]:
+            p["cost"] = round(p["cost"], 4)
+            p["share"] = _pct(p["tokens"], sum(x["tokens"] for x in out["providers"]))
+        for m in out["models"]:
+            m["cost"] = round(m["cost"], 4)
+            m["share"] = _pct(m["tokens"], sum(x["tokens"] for x in out["models"]))
+
+        for row in conn.execute(
+            """SELECT timestamp, provider, model, promptTokens, completionTokens, cost, status, tokens
+               FROM usageHistory ORDER BY timestamp DESC LIMIT 160"""
+        ):
+            try:
+                tok = json.loads(row["tokens"] or "{}")
+            except ValueError:
+                tok = {}
+            out["recent"].append({
+                "timestamp": row["timestamp"],
+                "time": _hhmm(row["timestamp"]),
+                "provider": row["provider"],
+                "model": row["model"],
+                "input": int(row["promptTokens"] or 0),
+                "output": int(row["completionTokens"] or 0),
+                "cached": int(tok.get("cached_tokens", 0) or 0),
+                "cost": round(float(row["cost"] or 0), 5),
+                "status": row["status"] or "ok",
+            })
+
+        groups: dict[str, dict] = {}
+        for row in conn.execute(
+            """SELECT timestamp, provider, model, status, data FROM requestDetails
+               WHERE status='error' ORDER BY timestamp DESC LIMIT 400"""
+        ):
+            try:
+                payload = json.loads(row["data"] or "{}")
+            except ValueError:
+                continue
+            resp = payload.get("response") or {}
+            raw = _error_message(resp.get("error") or resp.get("message") or resp)
+            msg = _clean(raw, 300) or "Falha sem mensagem do provedor"
+            msg = re.sub(r"\b[0-9a-f]{8}-[0-9a-f-]{20,}\b", "•••", msg, flags=re.I)
+            msg = re.sub(r"https?://\S+", "endpoint do provedor", msg)
+            status_code = resp.get("status")
+            key = f"{row['provider']}|{row['model']}|{msg[:120]}"
+            g = groups.setdefault(key, {"provider": row["provider"], "model": row["model"], "message": msg, "count": 0, "last": row["timestamp"], "code": None})
+            g["count"] += 1
+            if g["last"] < row["timestamp"]:
+                g["last"] = row["timestamp"]
+            if status_code:
+                try:
+                    g["code"] = int(status_code)
+                except (TypeError, ValueError):
+                    pass
+            m = re.search(r"\b(429|403|404|401|410|500|502|503)\b", msg)
+            if m and not g["code"]:
+                g["code"] = int(m.group(1))
+        out["errors"] = sorted(groups.values(), key=lambda x: (x["last"], x["count"]), reverse=True)[:14]
+        for e in out["errors"]:
+            e["diagnosis"] = diagnose(e["message"], e["provider"], e["model"])
+            e["prompt"] = error_prompt(e)
+
+        slo: dict[str, dict] = {}
+        overall = {"provider": "all", "requests": 0, "errors": 0, "lat": [], "ttft": []}
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        for row in conn.execute(
+            "SELECT timestamp, provider, status, data FROM requestDetails ORDER BY timestamp DESC LIMIT 5000"
+        ):
+            raw_ts = row["timestamp"]
+            if not raw_ts:
+                continue
+            try:
+                ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts < cutoff:
+                continue
+            provider = row["provider"] or "—"
+            try:
+                payload = json.loads(row["data"] or "{}")
+            except ValueError:
+                payload = {}
+            latency = payload.get("latency") or {}
+            total = latency.get("total")
+            ttft = latency.get("ttft")
+            failed = (row["status"] or "").lower() != "success"
+            for target in (slo.setdefault(provider, {"provider": provider, "requests": 0, "errors": 0, "lat": [], "ttft": []}), overall):
+                target["requests"] += 1
+                if failed:
+                    target["errors"] += 1
+                if isinstance(total, (int, float)) and total > 0:
+                    target["lat"].append(float(total))
+                if isinstance(ttft, (int, float)) and ttft > 0:
+                    target["ttft"].append(float(ttft))
+        for target in [*slo.values(), overall]:
+            target["errorRate"] = _pct(target["errors"], target["requests"])
+            target["tone"] = _slo_tone(target["errorRate"], _pctile(target["lat"], 95))
+            target["p50"] = _round_ms(_pctile(target["lat"], 50))
+            target["p95"] = _round_ms(_pctile(target["lat"], 95))
+            target["ttftP50"] = _round_ms(_pctile(target["ttft"], 50))
+            target.pop("lat", None)
+            target.pop("ttft", None)
+        out["slo"] = {
+            "providers": sorted(slo.values(), key=lambda x: x["requests"], reverse=True),
+            "overall": overall,
+            "window": "7d",
+        }
+    finally:
+        conn.close()
+    return out
+
+
+def _pctile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, int(round((p / 100) * (len(ordered) - 1)))))
+    return ordered[index]
+
+
+def _round_ms(value: float | None) -> int | None:
+    return int(round(value)) if value is not None else None
+
+
+def _slo_tone(error_rate: float, p95: float | None) -> str:
+    if error_rate >= 5 or (p95 is not None and p95 >= 45000):
+        return "bad"
+    if error_rate >= 1 or (p95 is not None and p95 >= 25000):
+        return "warn"
+    return "ok"
+
+
+def diagnose(message: str, provider: str, model: str) -> dict:
+    s = (message or "").lower()
+    if "credits_required" in s or "usage credits" in s:
+        return {"title": "Créditos exigidos para este modelo", "tone": "warn",
+                "cause": "O provedor aceita a conexão, mas o modelo premium exige crédito extra ou uma janela de uso diferente.",
+                "fix": "Trocar para um modelo incluído no plano, ativar créditos extras ou rotear este modelo para outro provedor."}
+    if "retired" in s or "end of life" in s or "no longer available" in s or "not a valid model" in s:
+        return {"title": "Modelo aposentado", "tone": "warn",
+                "cause": f"O modelo {model} saiu do catálogo do provedor {provider}; o pedido continua sendo enviado.",
+                "fix": "Remover o modelo do combo/rota e apontar para o substituto indicado pelo provedor."}
+    if "not found for account" in s or ("function" in s and "not found" in s):
+        return {"title": "Recurso sem acesso na conta", "tone": "bad",
+                "cause": "A conta ou chave atual não tem permissão para esta função/modelo no provedor.",
+                "fix": "Conferir permissões da chave no painel do provedor e habilitar o modelo antes de repetir."}
+    if "could not route" in s or "7003" in s or ("route" in s and "account" in s):
+        return {"title": "Rota de conta inválida", "tone": "bad",
+                "cause": "O provedor não reconhece o identificador da conta usado na URL; a conexão parece válida, mas a rota está errada.",
+                "fix": "Reconectar usando o account ID correto e testar um modelo barato antes de habilitar o combo."}
+    if "gone" in s or "410" in s:
+        return {"title": "Modelo removido do upstream", "tone": "warn",
+                "cause": "O upstream respondeu 410: o endpoint ou modelo deixou de existir.",
+                "fix": "Atualizar o catálogo, remover o modelo das rotas e configurar um equivalente."}
+    if "rate_limit" in s or "429" in s:
+        return {"title": "Limite de taxa", "tone": "warn",
+                "cause": "Rajadas de chamadas dentro da mesma janela de uso.",
+                "fix": "Aplicar retry com backoff exponencial e limitar a concorrência; usar fallback quando a janela estourar."}
+    if "403" in s or "forbidden" in s or "permission" in s:
+        return {"title": "Permissão negada", "tone": "bad",
+                "cause": "Token sem o escopo necessário, conta sem acesso ao modelo ou região bloqueada.",
+                "fix": "Reautorizar a conexão e conferir escopos/plano antes de repetir a chamada."}
+    if "not found" in s or "404" in s or "unavailable" in s or "api_error" in s:
+        return {"title": "Modelo indisponível", "tone": "warn",
+                "cause": "O identificador do modelo não existe neste provedor, saiu do catálogo ou está temporariamente fora.",
+                "fix": "Atualizar o catálogo e configurar um fallback com modelo equivalente."}
+    if ("context" in s or "token" in s) and "limit" in s:
+        return {"title": "Contexto acima do limite", "tone": "warn",
+                "cause": "A sessão acumulou mais contexto do que a janela do modelo suporta.",
+                "fix": "Compactar o contexto, remover leituras duplicadas e dividir a tarefa em etapas."}
+    return {"title": "Falha do provedor", "tone": "warn",
+            "cause": "Resposta de erro do upstream sem classificação automática.",
+            "fix": "Repetir com backoff, validar a conexão e configurar fallback."}
+
+
+def error_prompt(e: dict) -> str:
+    return (
+        "Contexto do Rune (local, sem segredos):\n"
+        f"- Provedor: {e['provider']}\n- Modelo: {e['model']}\n- Ocorrências: {e['count']}\n"
+        f"- Última: {e['last']}\n- Erro normalizado: {e['message']}\n"
+        f"- Causa provável: {e['diagnosis']['cause']}\n"
+        "Ajude-me a corrigir isso no 9router. Proponha: (1) diagnóstico, (2) política de retry/fallback, "
+        "(3) mudança de configuração segura. Não peça nem exponha chaves ou tokens."
+    )
+
+
+def load_qoder() -> dict:
+    out = {"sessions": [], "skills": {"total": 0, "included": 0, "top": []},
+           "duplicates": [], "artifacts": {"images": 0, "attachments": 0, "fileChanges": 0},
+           "agents": 0, "messages": 0}
+    conn = _ro(QODER_DB)
+    if conn is None:
+        return out
+    try:
+        ctx: dict[str, dict] = {}
+        duplicates: dict[str, dict] = {}
+        skills_top: dict[str, dict] = {}
+        latest_skills = None
+        for row in conn.execute("SELECT session_id, snapshot_json, updated_at FROM chat_session_context_usage"):
+            try:
+                snap = json.loads(row["snapshot_json"] or "{}")
+            except ValueError:
+                continue
+            info = {
+                "pct": round(float(snap.get("percentage", 0)) * 100, 1),
+                "categories": [{"name": c.get("name"), "pct": round(float(c.get("percentage", 0)) * 100, 1)} for c in snap.get("categories", [])],
+                "skills": snap.get("skills") or {},
+                "duplicates": snap.get("duplicateFileReads") or [],
+                "stats": snap.get("sessionStats") or {},
+                "updated_at": row["updated_at"],
+            }
+            if row["session_id"] not in ctx or (ctx[row["session_id"]]["updated_at"] or 0) < (row["updated_at"] or 0):
+                ctx[row["session_id"]] = info
+            for d in info["duplicates"]:
+                path = d.get("path") or ""
+                if not path:
+                    continue
+                g = duplicates.setdefault(path, {"path": path, "reads": 0, "wasted": 0})
+                g["reads"] = max(g["reads"], int(d.get("count", 0) or 0))
+                if d.get("wastedTokens"):
+                    g["wasted"] = max(g["wasted"], int(d.get("wastedTokens") or 0))
+                if not g["wasted"] and g["reads"] > 1:
+                    try:
+                        size = os.path.getsize(path)
+                        g["wasted"] = (g["reads"] - 1) * ((size + 3) // 4)
+                    except OSError:
+                        pass
+            sk = info["skills"]
+            if sk.get("skillFrontmatter"):
+                latest_skills = sk
+                for s in sk["skillFrontmatter"]:
+                    name = s.get("name") or "skill"
+                    skills_top[name] = {
+                        "name": name,
+                        "source": s.get("source") or "local",
+                        "pct": round(float(s.get("percentageOfContext", 0)) * 100, 3),
+                    }
+
+        sessions = []
+        for row in conn.execute(
+            """SELECT s.session_id, s.title, s.cwd, s.model, s.created_at, s.updated_at, s.product_mode,
+                      (SELECT COUNT(*) FROM chat_session_messages m WHERE m.session_id = s.session_id) AS msgs
+               FROM chat_sessions s
+               WHERE COALESCE(s.deleted_at, 0) = 0
+               ORDER BY s.updated_at DESC LIMIT 14"""
+        ):
+            c = ctx.get(row["session_id"], {})
+            project = Path(row["cwd"]).name if row["cwd"] else "sem projeto"
+            sessions.append({
+                "id": row["session_id"],
+                "title": row["title"] or project,
+                "project": project,
+                "cwd": row["cwd"] or "",
+                "model": row["model"] or "auto",
+                "mode": row["product_mode"] or "",
+                "messages": int(row["msgs"] or 0),
+                "created_at": _iso(row["created_at"]),
+                "updated_at": _iso(row["updated_at"]),
+                "context_pct": c.get("pct", 0),
+                "context": c.get("categories", []),
+                "duplicates": len(c.get("duplicates", [])),
+                "tool_calls": (c.get("stats") or {}).get("toolCalls", {}).get("total", 0),
+            })
+        try:
+            out["agents"] = conn.execute("SELECT COUNT(*) FROM agent_profiles WHERE archived_at IS NULL").fetchone()[0]
+        except sqlite3.Error:
+            pass
+        try:
+            out["messages"] = conn.execute("SELECT COUNT(*) FROM chat_session_messages").fetchone()[0]
+        except sqlite3.Error:
+            pass
+        for table, key in (("chat_generated_image_assets", "images"), ("chat_attachment_assets", "attachments"), ("turn_file_change_sets", "fileChanges")):
+            try:
+                out["artifacts"][key] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            except sqlite3.Error:
+                pass
+        out["sessions"] = sessions
+        out["duplicates"] = sorted(duplicates.values(), key=lambda x: (x["reads"], x["wasted"]), reverse=True)
+        if latest_skills:
+            out["skills"] = {
+                "total": int(latest_skills.get("totalSkills", 0) or 0),
+                "included": int(latest_skills.get("includedSkills", 0) or 0),
+                "top": sorted(skills_top.values(), key=lambda x: x["pct"], reverse=True)[:24],
+            }
+    finally:
+        conn.close()
+    return out
+
+
+def load_errors_fallback(data: dict) -> list[dict]:
+    errs = []
+    for conn in data.get("connections", []):
+        if conn.get("status") in ("error", "unavailable") or conn.get("errorCode"):
+            e = {
+                "provider": conn.get("provider", "?"),
+                "model": "conexão",
+                "message": _clean(conn.get("error") or "Conexão indisponível"),
+                "count": 1,
+                "last": conn.get("lastUsedAt") or "",
+                "code": conn.get("errorCode"),
+            }
+            e["diagnosis"] = diagnose(e["message"], e["provider"], e["model"])
+            e["prompt"] = error_prompt(e)
+            errs.append(e)
+    return errs
+
+
+def normalize_quota(data: dict) -> dict:
+    q = data.get("quota") or {}
+    codex = q.get("codex") or {}
+    claude = q.get("claude") or {}
+    google = q.get("google") or {}
+    out = {"codex": {"available": bool(codex.get("available"))}, "claude": {"available": bool(claude.get("available"))}, "google": {"available": bool(google.get("available"))}}
+    if codex:
+        primary = codex.get("primary") or {}
+        weekly = codex.get("weekly") or {}
+        budget = codex.get("budget") or {}
+        out["codex"].update({
+            "plan": codex.get("plan"),
+            "session_used": primary.get("used_percent"),
+            "session_free": round(100 - float(primary.get("used_percent", 0)), 1) if primary else None,
+            "session_reset": primary.get("reset_at"),
+            "session_hours": round(float(primary.get("reset_after_seconds", 0)) / 3600, 1) if primary else None,
+            "week_used": weekly.get("used_percent"),
+            "week_free": round(100 - float(weekly.get("used_percent", 0)), 1) if weekly else None,
+            "week_reset": weekly.get("reset_at"),
+            "week_days": weekly.get("days_left"),
+            "pace": budget.get("pace_percent_per_day"),
+            "target": budget.get("daily_target_percent"),
+            "alert": budget.get("alert_percent"),
+            "reset_credits": codex.get("reset_credits"),
+            "credits": codex.get("credits"),
+            "limit_reached": codex.get("limit_reached"),
+        })
+    if claude:
+        raw = claude.get("raw") or {}
+        five = raw.get("five_hour") or {}
+        week = raw.get("seven_day") or {}
+        extra = raw.get("iguana_necktie") or {}
+        out["claude"].update({
+            "session_used": five.get("utilization"),
+            "session_free": round(100 - float(five.get("utilization", 0)), 1) if five else None,
+            "session_reset": five.get("resets_at"),
+            "week_used": week.get("utilization"),
+            "week_free": round(100 - float(week.get("utilization", 0)), 1) if week else None,
+            "week_reset": week.get("resets_at"),
+            "credit_limit": extra.get("limit_dollars"),
+            "credit_used": extra.get("used_dollars"),
+            "credit_free": round(100 - float(extra.get("utilization", 0)) * 100, 2) if extra else None,
+            "credit_reset": extra.get("resets_at"),
+            "locked": five.get("locked_reason"),
+        })
+    if not google.get("available"):
+        out["google"]["error"] = _clean(google.get("error") or "sem medição de cota")
+    return out
+
+
+def build_snapshot() -> dict:
+    data = _read_json(DATA_FILE)
+    router = load_router_usage()
+    qoder = load_qoder()
+    now = datetime.now().astimezone()
+
+    usage = data.get("usage") or {}
+    days = router["days"]
+    today = router["today"] or {}
+    prev = days[-2] if len(days) > 1 else {}
+    total_tokens = sum(d["tokens"] for d in days)
+    total_cost = round(sum(d["cost"] for d in days), 4)
+    total_req = sum(d["requests"] for d in days)
+    total_cached = sum(d["cached"] for d in days)
+    total_input = sum(d["input"] for d in days)
+    active_days = [d for d in days if d["requests"]]
+    avg = sum(d["tokens"] for d in active_days) / len(active_days) if active_days else 0
+    cost_avg = sum(d["cost"] for d in active_days) / len(active_days) if active_days else 0
+
+    errors = router["errors"] or load_errors_fallback(data)
+    provider_health = {}
+    for e in errors:
+        p = provider_health.setdefault(e["provider"], {"errors": 0, "last": e["last"], "code": e["code"], "message": e["message"]})
+        p["errors"] += e["count"]
+        if e["last"] > p["last"]:
+            p.update({"last": e["last"], "code": e["code"], "message": e["message"]})
+
+    connections = []
+    for c in data.get("connections") or []:
+        connections.append({
+            "provider": c.get("provider"),
+            "name": c.get("name") or "conta",
+            "auth": c.get("auth"),
+            "active": bool(c.get("active")),
+            "status": c.get("status"),
+            "plan": c.get("plan") or "",
+            "errorCode": c.get("errorCode"),
+            "error": _clean(c.get("error"), 180),
+            "lastUsedAt": c.get("lastUsedAt"),
+            "expiresAt": c.get("expiresAt"),
+            "health": provider_health.get(c.get("provider")),
+        })
+
+    keys = [{"name": k.get("name"), "keyId": k.get("keyId"), "active": bool(k.get("active")), "restricted": bool(k.get("restricted"))}
+            for k in data.get("keys") or []]
+
+    settings = data.get("router_settings") or {}
+    inventory = data.get("inventory") or {}
+    codex_inv = inventory.get("codex") or {}
+    qoder_inv = inventory.get("qoder") or {}
+
+    projects = []
+    for p in data.get("projects") or []:
+        projects.append({
+            "name": p.get("name"), "path": p.get("path"), "kind": p.get("kind"),
+            "origin": p.get("origin"), "ais": p.get("ais") or [],
+            "sessions": int(p.get("sessions") or 0), "last_activity": p.get("last_activity"),
+        })
+    projects.sort(key=lambda x: (x["sessions"], x["last_activity"] or ""), reverse=True)
+
+    suggestions = []
+    for s in data.get("suggestions") or []:
+        suggestions.append({"level": s.get("level"), "title": _clean(s.get("title"), 90), "detail": _clean(s.get("detail"), 260)})
+
+    project_names = [p["name"] for p in projects if p.get("name")]
+    for session in qoder.get("sessions", []):
+        cwd = (session.get("cwd") or "").rstrip("/")
+        match = next((name for name in project_names if cwd.endswith("/" + name)), None)
+        session["project"] = match or "workspace Qoder"
+        if (session.get("title") or "").startswith("http"):
+            session["title"] = "Sessão sem título"
+
+    quota = normalize_quota(data)
+    codex_q = quota["codex"]
+    claude_q = quota["claude"]
+
+    sun_states = []
+    if codex_q.get("available"):
+        sun_states.append({
+            "key": "codex-week", "provider": "codex", "eyebrow": "FOLGA · CODEX SEMANA",
+            "pct": codex_q.get("week_free") if codex_q.get("week_free") is not None else 0,
+            "sub": f"{codex_q.get('week_days', 0):.1f} dias".replace(".", ",") if codex_q.get("week_days") else "sem janela",
+            "tag": f"ritmo {str(codex_q.get('pace', '—')).replace('.', ',')}%/dia · meta {str(codex_q.get('target', '—')).replace('.', ',')}%/dia",
+            "reset": codex_q.get("week_reset"),
+        })
+        sun_states.append({
+            "key": "codex-session", "provider": "codex", "eyebrow": "FOLGA · JANELA 5H",
+            "pct": codex_q.get("session_free") if codex_q.get("session_free") is not None else 0,
+            "sub": f"{codex_q.get('session_hours', 0):.1f}h".replace(".", ",") if codex_q.get("session_hours") else "sem janela",
+            "tag": f"uso {codex_q.get('session_used', 0)}% da janela curta",
+            "reset": codex_q.get("session_reset"),
+        })
+    if claude_q.get("available"):
+        sun_states.append({
+            "key": "claude-week", "provider": "claude", "eyebrow": "FOLGA · CLAUDE SEMANA",
+            "pct": claude_q.get("week_free") if claude_q.get("week_free") is not None else 0,
+            "sub": "7 dias",
+            "tag": "conexão exige créditos para modelos premium",
+            "reset": claude_q.get("week_reset"),
+        })
+
+    alerts = []
+    seen_alerts = set()
+    for e in errors[:6]:
+        title = f"{e['provider']} · {e['diagnosis']['title']}"
+        if title in seen_alerts:
+            continue
+        seen_alerts.add(title)
+        alerts.append({"tone": "bad" if (e.get("code") or 0) >= 400 else "warn", "title": title, "detail": e["diagnosis"]["fix"], "provider": e["provider"]})
+    if settings.get("headroomEnabled") and not settings.get("headroom_online"):
+        alerts.append({"tone": "warn", "title": "Headroom ligado, mas offline", "detail": "Cada request tenta comprimir em localhost:8787 e falha. Ligue o serviço ou desligue a opção.", "provider": "router"})
+    if today and prev and today.get("tokens", 0) > max(prev.get("tokens", 0) * 3, 1_000_000):
+        alerts.append({"tone": "info", "title": "Pico de uso hoje", "detail": f"{today['tokens']/1e6:.1f}M tokens hoje contra {prev.get('tokens',0)/1e6:.2f}M ontem. O cache está segurando o custo.", "provider": "router"})
+
+    top_provider = router["providers"][0] if router["providers"] else None
+    top_model = router["models"][0] if router["models"] else None
+    most_expensive = max(router["models"], key=lambda m: m["cost"], default=None)
+
+    return {
+        "meta": {
+            "now": now.isoformat(),
+            "now_label": now.strftime("%d/%m/%Y %H:%M"),
+            "operator": _operator_name(),
+            "host": socket.gethostname().replace(".local", ""),
+            "router_age": round(time.time() - ROUTER_DB.stat().st_mtime, 0) if ROUTER_DB.exists() else None,
+            "collector_age": round(time.time() - DATA_FILE.stat().st_mtime, 0) if DATA_FILE.exists() else None,
+            "qoder_age": round(time.time() - QODER_DB.stat().st_mtime, 0) if QODER_DB.exists() else None,
+            "sources": [
+                {"key": "router", "label": "9router", "path": str(ROUTER_DB), "status": "ok" if ROUTER_DB.exists() else "missing"},
+                {"key": "qoder", "label": "Qoder Desktop", "path": str(QODER_DB), "status": "ok" if QODER_DB.exists() else "missing"},
+                {"key": "collector", "label": "Coletor local", "path": str(DATA_FILE), "status": "ok" if DATA_FILE.exists() else "missing"},
+            ],
+            "privacy": [
+                "Nenhuma chave, token OAuth ou senha é lida para a interface.",
+                "Prompts e trechos de código não são persistidos nem enviados.",
+                "Apenas metadados derivados: provedor, modelo, tokens, custo, status e horário.",
+                "Servidor escuta só em 127.0.0.1 e abre os bancos em modo somente-leitura.",
+            ],
+        },
+        "series": days,
+        "hours": router.get("hours", {}),
+        "totals": {
+            "tokens": total_tokens, "cost": total_cost, "requests": total_req,
+            "cached": total_cached, "input": total_input,
+            "cacheHit": _pct(total_cached, total_input),
+            "activeDays": len(active_days),
+            "avgTokens": round(avg, 0), "avgCost": round(cost_avg, 4),
+        },
+        "today": today,
+        "providers": router["providers"],
+        "models": router["models"][:18],
+        "slo": router.get("slo") or {"providers": [], "overall": {}, "window": "7d"},
+        "recent": router["recent"],
+        "errors": errors,
+        "alerts": alerts,
+        "connections": connections,
+        "keys": keys,
+        "quota": quota,
+        "sunStates": sun_states,
+        "router": {
+            "headroom": {"enabled": bool(settings.get("headroomEnabled")), "online": bool(settings.get("headroom_online")), "url": settings.get("headroomUrl")},
+            "fallback": settings.get("fallbackStrategy"),
+            "tunnel": bool(settings.get("tunnelEnabled")),
+            "caveman": settings.get("cavemanLevel"),
+            "ponytail": settings.get("ponytailLevel"),
+            "combos": [{"name": c.get("name"), "models": len(c.get("models") or []), "kind": c.get("kind") or "combo"} for c in data.get("combos") or []],
+            "links": [
+                {"label": "Abrir 9router", "url": "http://127.0.0.1:20128", "hint": "painel local"},
+                {"label": "Painel anterior", "url": "http://127.0.0.1:8765", "hint": "ai-usage"},
+                {"label": "Headroom", "url": "http://127.0.0.1:8787", "hint": "compressor local"},
+            ],
+        },
+        "projects": projects,
+        "suggestions": suggestions,
+        "inventory": {
+            "clis": [{"name": c.get("name"), "installed": bool(c.get("installed"))} for c in inventory.get("clis") or []],
+            "apps": [{"name": a.get("name"), "installed": bool(a.get("installed"))} for a in inventory.get("apps") or []],
+            "codex": {"installed": bool(codex_inv.get("installed")), "model": codex_inv.get("model"), "plugins": int(codex_inv.get("plugins_total") or 0), "pluginsEnabled": int(codex_inv.get("plugins_enabled") or 0), "mcp": len(codex_inv.get("mcp") or [])},
+            "qoder": {"installed": bool(qoder_inv.get("installed")), "plugins": int(qoder_inv.get("plugins_total") or 0), "pluginsEnabled": int(qoder_inv.get("plugins_enabled") or 0)},
+        },
+        "qoder": qoder,
+        "insights": {
+            "topProvider": top_provider,
+            "topModel": top_model,
+            "mostExpensive": most_expensive,
+            "todayVsAvg": round(today.get("tokens", 0) / avg, 1) if avg else 0,
+            "todayVsPrev": round(today.get("tokens", 0) / prev.get("tokens", 1), 1) if prev and prev.get("tokens") else 0,
+            "costPerReq": round(today.get("cost", 0) / today.get("requests", 1), 4) if today.get("requests") else 0,
+            "freeTokensEstimate": round((codex_q.get("week_free") or 0) / 100 * 6_400_000),
+        },
+    }
+
+
+def _escape_label(value) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def _metric(lines: list[str], name: str, kind: str, help_text: str, samples: list[tuple[dict | None, float | int]]) -> None:
+    lines.append(f"# HELP {name} {help_text}")
+    lines.append(f"# TYPE {name} {kind}")
+    for labels, value in samples:
+        tag = ""
+        if labels:
+            tag = "{" + ",".join(f'{k}="{_escape_label(v)}"' for k, v in labels.items()) + "}"
+        lines.append(f"{name}{tag} {value}")
+
+
+def prometheus_metrics() -> str:
+    snap = build_snapshot()
+    today = snap.get("today") or {}
+    totals = snap.get("totals") or {}
+    meta = snap.get("meta") or {}
+    quota = snap.get("quota") or {}
+    slo = snap.get("slo") or {}
+    lines: list[str] = []
+
+    _metric(lines, "rune_up", "gauge", "Rune local collector reachable.", [(None, 1)])
+    _metric(lines, "rune_snapshot_timestamp_seconds", "gauge", "Unix time of this snapshot.", [(None, int(time.time()))])
+    _metric(lines, "rune_tokens_today", "gauge", "Tokens consumed today.", [(None, int(today.get("tokens") or 0))])
+    _metric(lines, "rune_requests_today", "gauge", "Requests made today.", [(None, int(today.get("requests") or 0))])
+    _metric(lines, "rune_cost_today_brl", "gauge", "Estimated cost today in BRL.", [(None, round(float(today.get("cost") or 0), 6))])
+    _metric(lines, "rune_cache_hit_ratio", "gauge", "Share of input tokens served from cache (0-1).", [(None, round(float(totals.get("cacheHit") or 0) / 100, 4))])
+    _metric(lines, "rune_errors_open", "gauge", "Grouped error diagnostics in the window.", [(None, len(snap.get("errors") or []))])
+    for key in ("router_age", "collector_age", "qoder_age"):
+        if meta.get(key) is not None:
+            _metric(lines, f"rune_{key}_seconds", "gauge", f"Age of {key.replace('_', ' ')} in seconds.", [(None, meta[key])])
+
+    _metric(lines, "rune_provider_tokens", "gauge", "Tokens per provider in the window.",
+            [({"provider": p.get("provider")}, int(p.get("tokens") or 0)) for p in snap.get("providers") or []])
+    _metric(lines, "rune_provider_requests", "gauge", "Requests per provider in the window.",
+            [({"provider": p.get("provider")}, int(p.get("requests") or 0)) for p in snap.get("providers") or []])
+    _metric(lines, "rune_provider_cost_brl", "gauge", "Estimated cost per provider in BRL.",
+            [({"provider": p.get("provider")}, round(float(p.get("cost") or 0), 6)) for p in snap.get("providers") or []])
+    _metric(lines, "rune_provider_share_ratio", "gauge", "Token share per provider (0-1).",
+            [({"provider": p.get("provider")}, round(float(p.get("share") or 0) / 100, 4)) for p in snap.get("providers") or []])
+
+    slo_rows = [p for p in slo.get("providers") or [] if p.get("requests")]
+    _metric(lines, "rune_provider_p50_latency_ms", "gauge", "Median end-to-end latency per provider (7d).",
+            [({"provider": p.get("provider")}, p.get("p50") or 0) for p in slo_rows])
+    _metric(lines, "rune_provider_p95_latency_ms", "gauge", "p95 end-to-end latency per provider (7d).",
+            [({"provider": p.get("provider")}, p.get("p95") or 0) for p in slo_rows])
+    _metric(lines, "rune_provider_ttft_p50_ms", "gauge", "Median time to first token per provider (7d).",
+            [({"provider": p.get("provider")}, p.get("ttftP50") or 0) for p in slo_rows])
+    _metric(lines, "rune_provider_error_ratio", "gauge", "Error share per provider (0-1).",
+            [({"provider": p.get("provider")}, round(float(p.get("errorRate") or 0) / 100, 4)) for p in slo_rows])
+
+    _metric(lines, "rune_model_tokens", "gauge", "Tokens per model (top models).",
+            [({"provider": m.get("provider"), "model": m.get("model")}, int(m.get("tokens") or 0)) for m in (snap.get("models") or [])[:15]])
+
+    for key in ("codex", "claude"):
+        q = quota.get(key) or {}
+        if q.get("available") and q.get("week_free") is not None:
+            _metric(lines, f"rune_{key}_week_free_ratio", "gauge", f"{key} weekly headroom (0-1).",
+                    [(None, round(float(q["week_free"]) / 100, 4))])
+    codex_q = quota.get("codex") or {}
+    if codex_q.get("available") and codex_q.get("session_free") is not None:
+        _metric(lines, "rune_codex_session_free_ratio", "gauge", "Codex 5h window headroom (0-1).",
+                [(None, round(float(codex_q["session_free"]) / 100, 4))])
+
+    return "\n".join(lines) + "\n"
+
+
+def _file_mode(path: Path) -> str | None:
+    try:
+        return format(path.stat().st_mode & 0o777, "03o")
+    except OSError:
+        return None
+
+
+def _mode_exposed(mode: str | None, want_group: bool = False) -> bool:
+    if not mode:
+        return False
+    group = int(mode[-2]) if len(mode) >= 2 else 0
+    other = int(mode[-1]) if mode else 0
+    return other != 0 or (want_group and group != 0)
+
+
+def _count_secrets(path: Path) -> int:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return 0
+    return len(SECRET_RE.findall(text))
+
+
+def security_audit() -> dict:
+    """Checagens somente-leitura do ambiente local. Nunca devolve segredos."""
+    data = _read_json(DATA_FILE)
+    settings = data.get("router_settings") or {}
+    findings: list[dict] = []
+    checks: list[dict] = []
+
+    def check(key: str, label: str, ok: bool, detail: str, params: dict | None = None) -> None:
+        checks.append({"key": key, "label": label, "ok": ok, "detail": detail, "params": params or {}})
+
+    def finding(level: str, code: str, title: str, detail: str, fix: str = "", params: dict | None = None) -> None:
+        findings.append({"level": level, "code": code, "title": title, "detail": detail, "fix": fix, "params": params or {}})
+
+    loopback = HOST in ("127.0.0.1", "localhost", "::1")
+    check("bind", "Servidor só em 127.0.0.1", loopback,
+          f"escuta em {HOST}:{PORT}" if loopback else f"exposto em {HOST}:{PORT}",
+          {"endpoint": f"{HOST}:{PORT}"})
+    if not loopback:
+        finding("bad", "bind_exposed", "Servidor exposto na rede",
+                f"O Rune está escutando em {HOST}:{PORT}. Isso permite que outras máquinas leiam seus metadados.",
+                f"RUNE_HOST=127.0.0.1 python3 {BASE / 'server.py'}", {"endpoint": f"{HOST}:{PORT}"})
+
+    targets = [
+        ("collector", "coletor", DATA_FILE, True),
+        ("collector_config", "config do coletor", AI_USAGE / "config.json", True),
+        ("collector_dir", "diretório do coletor", AI_USAGE, False),
+        ("router_db", "banco do 9router", ROUTER_DB, True),
+        ("qoder_db", "banco do Qoder", QODER_DB, True),
+    ]
+    perms_bad = []
+    for target, label, path, is_file in targets:
+        if not path.exists():
+            continue
+        mode = _file_mode(path)
+        exposed = _mode_exposed(mode, want_group=not is_file)
+        perms_bad.append({"target": target, "label": label, "path": path, "mode": mode, "exposed": exposed})
+        if exposed:
+            want = 600 if is_file else 700
+            finding("warn", "perm", f"{label[0].upper()}{label[1:]} legível por outros usuários",
+                    f"{path.name} está com permissão {mode}. Outros usuários locais conseguem ler metadados e credenciais.",
+                    f"chmod {want} '{path}'",
+                    {"target": target, "name": path.name, "mode": mode, "want": want})
+    check("perms", "Arquivos locais restritos ao seu usuário",
+          not any(p["exposed"] for p in perms_bad),
+          ", ".join(f"{p['label']} {p['mode']}" for p in perms_bad) or "nenhum arquivo encontrado",
+          {"list": ", ".join(f"{p['label']} {p['mode']}" for p in perms_bad),
+           "modes": {p["target"]: p["mode"] for p in perms_bad}})
+
+    scan_targets = [DATA_FILE, AI_USAGE / "config.json"]
+    hits = {str(p): _count_secrets(p) for p in scan_targets if p.exists()}
+    total_hits = sum(hits.values())
+    check("secrets", "Nenhum segredo nos arquivos do coletor", total_hits == 0,
+          "varredura por sk-, Bearer, ya29 e sk-ant" + (f" · {total_hits} achado(s)" if total_hits else ""),
+          {"hits": total_hits})
+    if total_hits:
+        finding("bad", "secret_text", "Segredo em texto no coletor",
+                f"{total_hits} padrão(ões) de chave encontrados em arquivos JSON do coletor. O valor nunca é exibido, mas o arquivo deve ser limpo e restrito.",
+                f"chmod 600 '{DATA_FILE}' && grep -nE 'sk-|Bearer|ya29|sk-ant' '{DATA_FILE}'",
+                {"n": total_hits})
+
+    active_keys = [k for k in data.get("keys") or [] if k.get("active")]
+    restricted = [k for k in active_keys if k.get("restricted")]
+    tunnel = bool(settings.get("tunnelEnabled"))
+    tunnel_state = "active" if tunnel and active_keys else "off" if not tunnel else "nokey"
+    check("tunnel", "Túnel do 9router protegido por chave", (not tunnel) or bool(active_keys),
+          "túnel ativo · exigência de API key preservada" if tunnel_state == "active" else ("túnel desligado" if tunnel_state == "off" else "túnel ativo sem chave ativa"),
+          {"state": tunnel_state})
+    if tunnel and not active_keys:
+        finding("bad", "tunnel_nokey", "Túnel ativo sem API key",
+                "O 9router está exposto por túnel e nenhuma chave ativa foi encontrada. O Rune não altera essa proteção — reative uma chave no painel do 9router.",
+                "Abra http://127.0.0.1:20128 e crie uma API key ativa.")
+    elif tunnel and len(restricted) < len(active_keys):
+        finding("warn", "tunnel_restrict", "Chave sem restrição com túnel ativo",
+                f"{len(active_keys) - len(restricted)} chave(s) ativa(s) sem restrição de modelos. Com o túnel ligado, uma chave vazada alcança toda a frota.",
+                "No painel do 9router, marque restrição de modelos/rotas nas chaves usadas pelo túnel.",
+                {"n": len(active_keys) - len(restricted)})
+    elif tunnel:
+        finding("info", "tunnel_info", "Túnel do 9router ativo",
+                "A exposição via Cloudflare continua protegida pela API key do 9router. O Rune não remove nem contorna essa exigência.",
+                "Mantenha a chave restrita e rotacione se houver suspeita de vazamento.")
+
+    check("readonly", "Bancos abertos em modo somente-leitura", True,
+          "9router e Qoder via file:...?mode=ro")
+    check("mask", "Credenciais nunca exibidas", True,
+          "chaves só por keyId; e-mails e segredos são mascarados")
+    check("redact", "Prompts e código fora do coletor", True,
+          "apenas provedor, modelo, tokens, custo, status e horário")
+
+    penalty = {"bad": 25, "warn": 12, "info": 3}
+    score = max(0, 100 - sum(penalty.get(f["level"], 0) for f in findings))
+    level = "ok" if score >= 90 else "warn" if score >= 50 else "bad"
+    order = {"bad": 0, "warn": 1, "info": 2}
+    findings.sort(key=lambda f: order.get(f["level"], 3))
+
+    return {
+        "ok": True,
+        "score": score,
+        "level": level,
+        "findings": findings,
+        "checks": checks,
+        "checked_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "rune-live/0.1"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send(self, status: int, body: bytes, ctype: str):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _json(self, status: int, payload: dict):
+        self._send(status, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            self._file(BASE / "index.html", "text/html; charset=utf-8")
+        elif path == "/styles.css":
+            self._file(BASE / "styles.css", "text/css; charset=utf-8")
+        elif path == "/app.js":
+            self._file(BASE / "app.js", "text/javascript; charset=utf-8")
+        elif path == "/i18n.js":
+            self._file(BASE / "i18n.js", "text/javascript; charset=utf-8")
+        elif path.startswith("/assets/"):
+            target = (BASE / path.lstrip("/")).resolve()
+            if BASE not in target.parents and target.parent != BASE:
+                self._json(404, {"error": "rota inexistente"})
+                return
+            ctype = "image/png" if target.suffix.lower() == ".png" else "application/octet-stream"
+            self._file(target, ctype)
+        elif path == "/api/snapshot":
+            try:
+                self._json(200, build_snapshot())
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"error": "falha ao montar snapshot", "detail": _clean(str(exc), 200)})
+        elif path == "/api/health":
+            self._json(200, {"ok": True, "pid": os.getpid(), "port": PORT})
+        elif path == "/api/security":
+            try:
+                self._json(200, security_audit())
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"ok": False, "error": "falha na auditoria", "detail": _clean(str(exc), 200)})
+        elif path == "/metrics":
+            try:
+                body = prometheus_metrics().encode("utf-8")
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"error": "falha ao gerar métricas", "detail": _clean(str(exc), 200)})
+                return
+            self._send(200, body, "text/plain; version=0.0.4; charset=utf-8")
+        else:
+            self._json(404, {"error": "rota inexistente"})
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/api/refresh":
+            if not _refresh_lock.acquire(blocking=False):
+                self._json(409, {"ok": False, "error": "coleta já em andamento"})
+                return
+            try:
+                if not COLLECT.exists():
+                    self._json(404, {"ok": False, "error": "collect.py não encontrado"})
+                    return
+                started = time.time()
+                try:
+                    env = {**os.environ, "AI_USAGE_HOME": str(AI_USAGE)}
+                    proc = subprocess.run([sys.executable, str(COLLECT), "--quiet"], cwd=str(COLLECT.parent),
+                                          capture_output=True, text=True, timeout=90, env=env)
+                except subprocess.TimeoutExpired:
+                    self._json(504, {"ok": False, "error": "coleta excedeu 90s"})
+                    return
+                if proc.returncode != 0:
+                    tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-4:]
+                    self._json(500, {"ok": False, "error": "collect.py falhou", "detail": "\n".join(tail)})
+                    return
+                self._json(200, {"ok": True, "seconds": round(time.time() - started, 1), "snapshot": build_snapshot()})
+            finally:
+                _refresh_lock.release()
+        else:
+            self._json(404, {"error": "rota inexistente"})
+
+    def _file(self, path: Path, ctype: str):
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self._json(404, {"error": "arquivo não encontrado"})
+            return
+        self._send(200, body, ctype)
+
+
+def main() -> int:
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server.daemon_threads = True
+    print(f"Rune Live em http://{HOST}:{PORT}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

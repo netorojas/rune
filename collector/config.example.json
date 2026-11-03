@@ -1,0 +1,11 @@
+{
+  "_comentario": "Ajustes do painel. daily_target_percent_override: null = calculado automaticamente (restante / dias ate reset). alert_percent: a partir de quanto % da janela semanal o painel passa a alertar.",
+  "daily_target_percent_override": null,
+  "alert_percent": 80,
+  "preferred_models": {
+    "codigo": "gpt-6.1-sol (Codex) para tarefas dificeis",
+    "texto": "deepseek/deepseek-v3.2 (OpenRouter) para volume",
+    "pesquisa": "gemini-3.8-flash (Antigravity) para pesquisa",
+    "gratis": "openrouter/openrouter/free ou nvidia/nemotron-3-ultra"
+  }
+}

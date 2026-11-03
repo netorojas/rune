@@ -1,0 +1,3375 @@
+/* ============================================================
+   RUNE · ATLAS — runtime local-first
+   lê /api/snapshot, hidrata a cena e as dez alas
+   ============================================================ */
+(() => {
+  "use strict";
+
+  /* ---------------------------------------------------------- helpers */
+
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const clamp = (v, min = 0, max = 100) => Math.min(max, Math.max(min, v));
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  const I18N = window.RUNE_I18N;
+  const tr = (key, vars) => (I18N ? I18N.t(state.lang, key, vars) : key);
+  const locale = () => (I18N && I18N.locales[state.lang]) || "pt-BR";
+  const fmtCache = new Map();
+  const nfFor = (opts = {}) => {
+    const key = `${locale()}|${JSON.stringify(opts)}`;
+    if (!fmtCache.has(key)) fmtCache.set(key, new Intl.NumberFormat(locale(), opts));
+    return fmtCache.get(key);
+  };
+  const dec = (v, digits = 1) => nfFor({ maximumFractionDigits: digits, minimumFractionDigits: 0 }).format(Number(v) || 0);
+  const int = (v) => nfFor({ maximumFractionDigits: 0 }).format(Math.round(Number(v) || 0));
+  const pct = (v, digits = 1) => `${dec(v, digits)}%`;
+  const CURRENCIES = { BRL: "R$", USD: "$", EUR: "€" };
+  const toDisplay = (v) => {
+    const n = Number(v) || 0;
+    if (state.currency === "BRL") return n;
+    const rate = Number(state.rates?.[state.currency]) || 1;
+    return n / rate;
+  };
+  const fromDisplay = (v) => {
+    const n = Number(v) || 0;
+    if (state.currency === "BRL") return n;
+    return n * (Number(state.rates?.[state.currency]) || 1);
+  };
+  const money = (v) => {
+    const opts = { style: "currency", currency: state.currency, minimumFractionDigits: 2, maximumFractionDigits: 2 };
+    try { return nfFor(opts).format(toDisplay(v)); }
+    catch { return `${CURRENCIES[state.currency] || ""} ${dec(toDisplay(v), 2)}`; }
+  };
+  const moneyTight = money;
+  const compact = (v) => {
+    const n = Number(v) || 0;
+    if (Math.abs(n) >= 1e9) return `${dec(n / 1e9, 2)}B`;
+    if (Math.abs(n) >= 1e6) return `${dec(n / 1e6, 2)}M`;
+    if (Math.abs(n) >= 1e3) return `${dec(n / 1e3, 1)}k`;
+    return String(Math.round(n));
+  };
+  const modelName = (v) => String(v || "").replace(/^.*\//, "");
+  const dateObj = (v) => {
+    if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      const [y, m, d] = v.split("-").map(Number);
+      return new Date(y, m - 1, d, 12);
+    }
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const weekdayName = (d) => new Intl.DateTimeFormat(locale(), { weekday: "long" }).format(d);
+  const monthShort = (d) => new Intl.DateTimeFormat(locale(), { month: "short" }).format(d).replace(/\.$/, "");
+  const longDate = (iso) => {
+    const d = dateObj(iso) || new Date();
+    return `${weekdayName(d)}, ${d.getDate()} ${monthShort(d)}`;
+  };
+  const timeShort = (iso) => {
+    const d = dateObj(iso);
+    return d ? d.toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" }) : "—";
+  };
+  const latency = (v) => {
+    const n = Number(v);
+    if (!n) return "—";
+    return n < 1000 ? `${Math.round(n)} ms` : `${dec(n / 1000, 1)} s`;
+  };
+  const ago = (seconds) => {
+    const s = Math.max(0, Number(seconds) || 0);
+    if (s < 60) return tr("common.now");
+    if (s < 3600) return tr("common.minAgo", { n: Math.round(s / 60) });
+    if (s < 86400) return tr("common.hourAgo", { n: dec(s / 3600, 1) });
+    return tr("common.dayAgo", { n: Math.round(s / 86400) });
+  };
+  const until = (iso) => {
+    const d = dateObj(iso);
+    if (!d) return "—";
+    const diff = d.getTime() - Date.now();
+    if (diff <= 0) return tr("common.now");
+    const m = Math.round(diff / 60000);
+    if (m < 60) return tr("common.inMin", { n: m });
+    const h = diff / 3600000;
+    if (h < 24) return tr("common.inHour", { n: dec(h, 1) });
+    return tr("common.inDay", { n: dec(diff / 86400000, 1) });
+  };
+  const rel = (iso) => {
+    const d = dateObj(iso);
+    if (!d) return "—";
+    const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
+    return ago(s);
+  };
+  const maskEmail = (value) => {    const v = String(value || "");
+    if (!v.includes("@")) return v;
+    const [user, domain] = v.split("@");
+    const u = user.length > 1 ? `${user[0]}•••` : "•";
+    const dparts = domain.split(".");
+    const d = `${dparts[0][0] || "•"}•••${dparts[1] ? `.${dparts[1]}` : ""}`;
+    return `${u}@${d}`;
+  };
+  const greeting = () => {
+    const h = new Date().getHours();
+    if (h < 12) return tr("hero.greetingMorning");
+    if (h < 18) return tr("hero.greetingAfternoon");
+    return tr("hero.greetingEvening");
+  };
+  const nkey = (v) => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const uuidShort = (v) => String(v || "").slice(0, 8);
+
+  const store = {
+    get(key, fallback) {
+      try {
+        const raw = localStorage.getItem(`rune.${key}`);
+        return raw === null ? fallback : JSON.parse(raw);
+      } catch { return fallback; }
+    },
+    set(key, value) {
+      try { localStorage.setItem(`rune.${key}`, JSON.stringify(value)); } catch { /* noop */ }
+    },
+  };
+
+  /* ---------------------------------------------------------- frota */
+
+  const PROVIDERS = {
+    codex: { name: "Codex", color: "#2f9e6b", vendor: "OpenAI", glyph: "C" },
+    claude: { name: "Claude", color: "#d97757", vendor: "Anthropic", glyph: "A" },
+    antigravity: { name: "Antigravity", color: "#8b7ad4", vendor: "Google", glyph: "G" },
+    "gemini-cli": { name: "Gemini CLI", color: "#4a8bf5", vendor: "Google", glyph: "G" },
+    gemini: { name: "Gemini", color: "#4a8bf5", vendor: "Google", glyph: "G" },
+    openrouter: { name: "OpenRouter", color: "#4f7fd8", vendor: "OpenRouter", glyph: "O" },
+    nvidia: { name: "NVIDIA NIM", color: "#76b900", vendor: "NVIDIA", glyph: "N" },
+    ollama: { name: "Ollama", color: "#6a8794", vendor: "local", glyph: "O" },
+    "cloudflare-ai": { name: "Cloudflare AI", color: "#f38020", vendor: "Cloudflare", glyph: "C" },
+    opencode: { name: "OpenCode", color: "#3f6070", vendor: "open source", glyph: "O" },
+    deepseek: { name: "DeepSeek", color: "#3d7bd8", vendor: "DeepSeek", glyph: "D" },
+  };
+  const provMeta = (key) => PROVIDERS[key] || { name: key || "—", color: "#6a8794", vendor: "", glyph: (key || "?").slice(0, 1).toUpperCase() };
+  const provName = (key) => provMeta(key).name;
+  const provColor = (key) => provMeta(key).color;
+
+  /* Manuais da frota. Fatos de uso vêm do snapshot; aqui ficam finalidade,
+     limites e alavancas de administração + documentação oficial verificada. */
+  const KNOWLEDGE = {
+    codex: {
+      tag: "Agente de código",
+      purpose: "Agente da OpenAI que lê o repositório, edita arquivos, executa comandos e testes. É a escolha natural para trabalho de engenharia com ferramentas, não apenas para responder perguntas.",
+      best: ["Implementar e refatorar em repositórios reais", "Tarefas longas com testes e iteração", "Trabalho em lote com contexto de projeto"],
+      avoid: ["Perguntas curtas que não precisam de ferramentas", "Sessões gigantes sem reutilizar cache", "Tarefas de volume massivo com contexto enorme"],
+      manage: ["Acompanhe a janela semanal e a janela de 5h antes de picos", "Reutilize a mesma sessão para aproveitar cache de prompt", "Use verbosity/reasoning baixos na rotina", "Desative plugins e MCP que não usa: eles entram no input fixo", "Você tem 2 reset credits disponíveis"],
+      docs: [["Documentação Codex", "https://developers.openai.com/codex/"], ["Platform docs", "https://platform.openai.com/docs"]],
+      verdict: "Código com ferramentas. Para rotina use modelos rápidos; reserve os modelos maiores para arquitetura e depuração difícil.",
+    },
+    claude: {
+      tag: "Raciocínio e contexto longo",
+      purpose: "Modelos da Anthropic com foco em escrita, análise, raciocínio cuidadoso e janelas de contexto longas. Também atua como agente de código via Claude Code.",
+      best: ["Textos longos, análise e revisão crítica", "Contextos grandes com muitos documentos", "Trabalho que exige nuance e justificativa"],
+      avoid: ["Volume barato de classificação simples", "Tarefas que dependem de créditos premium sem saldo", "Pedidos repetitivos sem cache"],
+      manage: ["Existem janelas de sessão e semanal; acompanhe as duas", "Modelos premium exigem créditos extras nesta conexão", "Use prompt caching para documentos repetidos", "Reduza anexos e histórico quando o contexto não for essencial"],
+      docs: [["Claude docs", "https://docs.claude.com/"], ["Claude Code", "https://code.claude.com/docs/"], ["Suporte e planos", "https://support.anthropic.com/"]],
+      verdict: "Qualidade de raciocínio e contexto. Use quando a resposta precisa ser pensada; evite para volume descartável.",
+    },
+    antigravity: {
+      tag: "IDE agêntica",
+      purpose: "Ambiente agêntico do Google com modelos Gemini, voltado a planejar e executar mudanças em projetos com supervisão humana.",
+      best: ["Explorar e alterar projetos com planejamento", "Tarefas multimodais com imagens e UI", "Trabalho assistido em janelas grandes"],
+      avoid: ["Tarefas isoladas de terminal", "Fluxos que exigem um modelo específico não exposto"],
+      manage: ["A cota é por modelo e por conta; escolha o modelo certo", "Aproveite cache de contexto em projetos longos", "Evite reenviar arquivos inteiros quando um trecho basta"],
+      docs: [["Antigravity docs", "https://antigravity.google/docs"], ["Gemini API", "https://ai.google.dev/gemini-api/docs"]],
+      verdict: "Projetos multimodais e mudanças planejadas no Google. Ótimo para UI, imagens e contexto grande.",
+    },
+    "gemini-cli": {
+      tag: "CLI do Gemini",
+      purpose: "Interface de linha de comando do Gemini para tarefas rápidas, scripts e automação no terminal.",
+      best: ["Perguntas e transformações rápidas", "Automação de terminal", "Modelos Gemini com contexto grande"],
+      avoid: ["Trabalho que exige edição sofisticada de repositório", "Fluxos com ferramentas proprietárias de outra IDE"],
+      manage: ["A cota segue a conta Google e o modelo escolhido", "Prefira modelos flash para volume", "Use cache de contexto em sessões longas"],
+      docs: [["Gemini API", "https://ai.google.dev/gemini-api/docs"], ["Antigravity docs", "https://antigravity.google/docs"]],
+      verdict: "Velocidade no terminal. Bom para tarefas curtas e automação; para repo grande, prefira um agente dedicado.",
+    },
+    gemini: {
+      tag: "Multimodal",
+      purpose: "Modelos Gemini via API, com força em multimodalidade, contexto longo e custo agressivo nos modelos flash.",
+      best: ["Imagens, PDFs e vídeo", "Contextos muito longos", "Volume com modelo flash"],
+      avoid: ["Tarefas que exigem sigilo absoluto na nuvem", "Raciocínio profundo sem testar o modelo maior"],
+      manage: ["Escolha flash para volume e pro para raciocínio", "Cobre por token; monitore grounding e mídia", "Use cache de contexto quando repetir documentos"],
+      docs: [["Gemini API", "https://ai.google.dev/gemini-api/docs"]],
+      verdict: "Multimodal e contexto longo com bom custo. Ideal para documentos, imagens e análise em escala.",
+    },
+    openrouter: {
+      tag: "Roteador multi-modelo",
+      purpose: "Gateway que expõe centenas de modelos com uma única API, créditos e políticas de roteamento/fallback.",
+      best: ["Comparar modelos com a mesma interface", "Fallback entre provedores", "Modelos grátis para experimentos"],
+      avoid: ["Quando você precisa do recurso exclusivo de um provedor", "Rotas sem limite de gasto"],
+      manage: ["Defina limites de crédito e acompanhe o consumo por modelo", "Use variantes :free para testes", "Configure fallback e ordem de provedores", "Cuidado com modelos marcados como beta"],
+      docs: [["OpenRouter docs", "https://openrouter.ai/docs"], ["FAQ e limites", "https://openrouter.ai/docs/faq"]],
+      verdict: "Flexibilidade e fallback. Use como camada de roteamento; para o melhor de um provedor, conecte-o direto.",
+    },
+    nvidia: {
+      tag: "Modelos abertos acelerados",
+      purpose: "Catálogo NIM da NVIDIA com modelos abertos otimizados, útil para experimentação e volume sem custo por token no plano atual.",
+      best: ["Volume e experimentos com custo zero", "Modelos abertos como Nemotron", "Testes de qualidade antes de migrar"],
+      avoid: ["Dados que não podem sair da máquina", "Disponibilidade crítica sem fallback"],
+      manage: ["Acompanhe rate limits e modelos aposentados", "Mantenha fallback para outro provedor", "Atualize o catálogo: modelos EOL param de responder", "Não use como único caminho para produção"],
+      docs: [["NVIDIA NIM", "https://docs.nvidia.com/nim/"], ["Build NVIDIA", "https://build.nvidia.com/"]],
+      verdict: "Custo zero para volume e testes. Excelente segunda rota; não confie como rota única.",
+    },
+    ollama: {
+      tag: "Modelos locais",
+      purpose: "Executa modelos abertos na sua máquina. Nada sai do computador; o limite é hardware, não cota de nuvem.",
+      best: ["Privacidade total", "Trabalho offline", "Testes de modelos e embeddings locais"],
+      avoid: ["Modelos grandes sem VRAM suficiente", "Tarefas que exigem o estado da arte em código"],
+      manage: ["Escolha tamanho/quantização conforme RAM e VRAM", "Ajuste keep_alive para liberar memória", "Atualize modelos EOL: o combo atual ainda aponta para um aposentado", "Um modelo por vez evita swap"],
+      docs: [["Biblioteca Ollama", "https://ollama.com/library"], ["Documentação", "https://docs.ollama.com/"]],
+      verdict: "Privacidade e offline. Use para dados sensíveis e experimentos locais; aceite menos capacidade.",
+    },
+    "cloudflare-ai": {
+      tag: "Inferência na borda",
+      purpose: "Workers AI roda modelos na rede da Cloudflare, com cobrança por neurônios e integração a Workers.",
+      best: ["APIs de baixa latência na borda", "Tarefas leves integradas a Workers", "Embeddings e classificação"],
+      avoid: ["Modelos de fronteira para código complexo", "Contas sem account ID correto"],
+      manage: ["A cobrança é por neurônios; monitore por modelo", "Cache respostas repetidas", "Valide o account ID antes de habilitar no combo"],
+      docs: [["Workers AI docs", "https://developers.cloudflare.com/workers-ai/"]],
+      verdict: "Latência de borda e integração serverless. Melhor para tarefas leves, não para código pesado.",
+    },
+    opencode: {
+      tag: "Agente open source",
+      purpose: "Agente de código open source que usa o provedor/modelo que você conectar, com foco em terminal e fluxo aberto.",
+      best: ["Fluxos de código abertos e customizáveis", "Usar seu próprio provedor", "Automação no terminal"],
+      avoid: ["Quando você precisa de suporte proprietário", "Modelos fora do catálogo configurado"],
+      manage: ["Defina o modelo padrão e o fallback", "Atualize o catálogo quando um modelo sumir", "Limite o contexto enviado por tarefa"],
+      docs: [["OpenCode docs", "https://opencode.ai/docs/"]],
+      verdict: "Customização e abertura. Bom quando você quer controle do agente e do provedor.",
+    },
+  };
+
+  const knowledgeFor = (key) => KNOWLEDGE[key] || null;
+
+  /* ---------------------------------------------------------- state */
+
+  const app = $("#app");
+  const stage = $("#stage");
+  const holder = $("#holder");
+
+  const detectLang = () => {
+    const nav = (navigator.languages && navigator.languages[0]) || navigator.language || "pt-BR";
+    const code = String(nav).slice(0, 2).toLowerCase();
+    return I18N && I18N.has(code) ? code : "pt";
+  };
+
+  const normalizeBudgets = (raw) => {
+    const src = raw && typeof raw === "object" ? raw : {};
+    const providers = {};
+    Object.entries(src.providers || {}).forEach(([key, value]) => {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) providers[key] = Math.round(n * 100) / 100;
+    });
+    const global = Number(src.global);
+    const threshold = Number(src.threshold);
+    return {
+      global: Number.isFinite(global) && global > 0 ? Math.round(global * 100) / 100 : null,
+      providers,
+      threshold: [60, 70, 80, 90].includes(threshold) ? threshold : 80,
+    };
+  };
+
+  const state = {
+    snap: null,
+    lang: I18N && I18N.has(store.get("lang", detectLang())) ? store.get("lang", detectLang()) : "pt",
+    currency: ["BRL", "USD", "EUR"].includes(store.get("currency", "BRL")) ? store.get("currency", "BRL") : "BRL",
+    rates: { USD: 5.42, EUR: 5.86, ...(store.get("rates", {}) || {}) },
+    loadedAt: 0,
+    mode: "today",
+    selectedDay: null,
+    focus: "",
+    tab: "agora",
+    wing: null,
+    sunStates: [],
+    sunIndex: 0,
+    sunPaused: false,
+    chartItems: [],
+    bucketKind: "hours",
+    quests: [],
+    doneSet: new Set(),
+    reviewed: new Set(store.get("reviewed", [])),
+    visited: new Set(store.get("visited", [])),
+    votes: store.get("votes", {}),
+    palette: [],
+    paletteIndex: 0,
+    tourStep: 0,
+    chat: [],
+    chatBusy: false,
+    sessionQuery: "",
+    sessionSort: "context",
+    projectionDays: 7,
+    manualTask: "code",
+    busy: false,
+    ready: false,
+    pipIndex: 0,
+    lastTipAt: 0,
+    settingsOpen: false,
+    budgetOpen: false,
+    budgets: normalizeBudgets(store.get("budgets", {})),
+    security: null,
+    securityLoading: false,
+    operator: store.get("operator", ""),
+  };
+
+  const railIcon = (key) => {
+    const svg = document.querySelector(`.rail-btn[data-wing="${key}"] svg`);
+    return svg ? svg.outerHTML : "";
+  };
+
+  const WINGS = {
+    atlas: { eyebrow: "CÉU", title: "Atlas", sub: "A visão geral da sua operação de IA." },
+    fluxo: { eyebrow: "ALA 01", title: "Fluxo", sub: "Consumo, projeção e orçamento em uma linha do tempo viva." },
+    sessoes: { eyebrow: "ALA 02", title: "Sessões", sub: "Cada chamada, cada projeto, cada contexto — com diagnóstico." },
+    oficina: { eyebrow: "ALA 03", title: "Oficina", sub: "Skills, artefatos e o desperdício que ninguém vê." },
+    oraculo: { eyebrow: "ALA 04", title: "Oráculo", sub: "O assistente local que lê seus números e propõe ações." },
+    biblioteca: { eyebrow: "ALA 05", title: "Biblioteca", sub: "O manual da frota: para que serve cada IA e como domar o consumo." },
+    diario: { eyebrow: "ALA 06", title: "Diário", sub: "Changelog, conquistas e a memória da sua operação." },
+    guilda: { eyebrow: "ALA 07", title: "Guilda", sub: "Comunidade, roadmap e o próximo passo do Rune." },
+    perfil: { eyebrow: "ALA 08", title: "Perfil", sub: "Conexões, fontes locais, chaves mascaradas e privacidade." },
+    ajuda: { eyebrow: "ALA 09", title: "Ajuda", sub: "Transforme erro em correção com um prompt pronto." },
+  };
+
+  const WING_ORDER = ["fluxo", "sessoes", "oficina", "oraculo", "biblioteca", "diario", "guilda", "perfil", "ajuda"];
+
+  /* ---------------------------------------------------------- boot */
+
+  function boot() {
+    scaleStage();
+    initStars();
+    initSceneFx();
+    initParallax();
+    bindChrome();
+    bindDelegates();
+    bindKeyboard();
+    initTour();
+    applyShellTranslations();
+    loadSnapshot();
+    startClocks();
+  }
+
+  function scaleStage() {
+    const pad = 36;
+    const scale = Math.min((window.innerWidth - pad) / 1440, (window.innerHeight - pad) / 900, 1);
+    stage.style.transform = `scale(${scale})`;
+    holder.style.width = `${1440 * scale}px`;
+    holder.style.height = `${900 * scale}px`;
+  }
+
+  async function loadSnapshot() {
+    try {
+      const res = await fetch("/api/snapshot", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      applySnapshot(data);
+    } catch (err) {
+      console.error("Rune snapshot:", err);
+      $("#liveLabel").textContent = "offline";
+      $("#livePill").classList.add("stale");
+      $("#chartSub").textContent = tr("common.localError");
+      toast(`Servidor local não respondeu · ${err.message}`, "bad");
+    }
+  }
+
+  function applySnapshot(data, opts = {}) {
+    if (!data || !data.meta) throw new Error("snapshot inválido");
+    const first = !state.snap;
+    state.snap = data;
+    state.loadedAt = Date.now();
+    if (!state.selectedDay || !data.series?.some((d) => d.date === state.selectedDay)) {
+      state.selectedDay = data.today?.date || data.series?.[data.series.length - 1]?.date || null;
+    }
+    state.sunStates = Array.isArray(data.sunStates) ? data.sunStates : [];
+    state.sunIndex = Math.min(state.sunIndex, Math.max(0, state.sunStates.length - 1));
+
+    renderTopbar();
+    renderSun();
+    renderHero();
+    renderToday();
+    renderFleet();
+    renderTimeline();
+    renderChart();
+    renderQuests();
+    renderXP();
+    renderCockpit();
+    renderBand();
+    renderTicker();
+    renderPipTip(true);
+    if (state.wing) renderWing(state.wing, { preserve: true });
+
+    if (first) {
+      state.doneSet = new Set(state.quests.filter((q) => q.done).map((q) => q.id));
+      state.ready = true;
+      if (!store.get("tourSeen", false) && !location.search.includes("notour")) {
+        setTimeout(() => { if (!state.wing && $("#drawer").hidden) startTour(); }, 1500);
+      }
+    }
+  }
+
+  /* ---------------------------------------------------------- scene */
+
+  function initStars() {
+    const stars = $("#stars");
+    if (!stars || stars.childElementCount) return;
+    let html = "";
+    for (let i = 0; i < 74; i++) {
+      const x = (Math.random() * 100).toFixed(2);
+      const y = (Math.random() * 62).toFixed(2);
+      const delay = (Math.random() * 6).toFixed(2);
+      const size = Math.random() > 0.82 ? 2.6 : 2;
+      html += `<i class="star" style="left:${x}%;top:${y}%;width:${size}px;height:${size}px;animation-delay:${delay}s"></i>`;
+    }
+    stars.innerHTML = html;
+  }
+
+  function initSceneFx() {
+    const canvas = $("#sceneFx");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = 1440 * dpr;
+    canvas.height = 900 * dpr;
+    ctx.scale(dpr, dpr);
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const parts = Array.from({ length: 42 }, () => ({
+      x: Math.random() * 1440,
+      y: Math.random() * 900,
+      vx: (Math.random() - 0.5) * 0.16,
+      vy: 0.05 + Math.random() * 0.22,
+      r: 0.7 + Math.random() * 1.8,
+      a: 0.12 + Math.random() * 0.26,
+      p: Math.random() * Math.PI * 2,
+    }));
+    if (reduce) return;
+    let t = 0;
+    const frame = () => {
+      t += 0.016;
+      ctx.clearRect(0, 0, 1440, 900);
+      const dusk = app.dataset.light === "dusk";
+      parts.forEach((p) => {
+        p.x += p.vx + Math.sin(t * 0.5 + p.p) * 0.06;
+        p.y += p.vy;
+        if (p.y > 910) { p.y = -10; p.x = Math.random() * 1440; }
+        if (p.x < -10) p.x = 1450;
+        if (p.x > 1450) p.x = -10;
+        const alpha = p.a * (0.7 + 0.3 * Math.sin(t + p.p));
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        if (dusk) {
+          ctx.fillStyle = `rgba(255, 231, 150, ${alpha * 1.4})`;
+          ctx.shadowColor = "rgba(255, 226, 128, .8)";
+          ctx.shadowBlur = 8;
+        } else {
+          ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+          ctx.shadowColor = "rgba(255, 255, 255, .6)";
+          ctx.shadowBlur = 4;
+        }
+        ctx.fill();
+      });
+      ctx.shadowBlur = 0;
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }
+
+  function initParallax() {
+    let tx = 0, ty = 0, cx = 0, cy = 0;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) return;
+    app.addEventListener("pointermove", (e) => {
+      const r = app.getBoundingClientRect();
+      tx = (e.clientX - r.left) / Math.max(1, r.width) - 0.5;
+      ty = (e.clientY - r.top) / Math.max(1, r.height) - 0.5;
+    });
+    const loop = () => {
+      cx += (tx - cx) * 0.06;
+      cy += (ty - cy) * 0.06;
+      app.style.setProperty("--px", cx.toFixed(4));
+      app.style.setProperty("--py", cy.toFixed(4));
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+
+  /* ---------------------------------------------------------- topbar + hero */
+
+  function renderTopbar() {
+    const S = state.snap;
+    const meta = S.meta;
+    $("#crumbRoot").textContent = meta.host || "Rune";
+    $("#heroPill").innerHTML = `<i class="dot-live"></i> ${esc(longDate(meta.now))} · ${esc(tr("common.localMode"))}`;
+    $("#streakVal").textContent = S.totals.activeDays;
+    $("#streak").title = `${S.totals.activeDays} · ${tr("common.days")}`;
+    $("#chipLiveText").textContent = tr("hero.collectAgo", { ago: ago(meta.router_age) });
+    $("#chipProviders").textContent = tr("hero.providersMeasuring", { n: S.providers.length });
+    $("#liveLabel").textContent = tr("common.live");
+    $("#livePill").classList.toggle("stale", meta.router_age > 1800);
+    $("#livePill").classList.toggle("busy", state.busy);
+    $("#cockpitLive").textContent = state.busy ? tr("common.collecting") : tr("common.live");
+    updateAgeLabels();
+  }
+
+  function renderHero() {
+    const S = state.snap;
+    const q = S.quota?.codex;
+    const weekFree = q?.available ? q.week_free : null;
+    const bad = (S.alerts || []).filter((a) => a.tone === "bad").length;
+    const warn = (S.alerts || []).filter((a) => a.tone === "warn").length;
+    const sky = bad
+      ? tr(bad === 1 ? "hero.skyBadOne" : "hero.skyBad", { n: bad })
+      : warn
+        ? tr(warn === 1 ? "hero.skyWarnOne" : "hero.skyWarn", { n: warn })
+        : tr("hero.skyClear");
+    const pace = q?.pace != null && q?.target != null ? tr(q.pace < q.target ? "hero.paceUnder" : "hero.paceOver") : "";
+    const folga = weekFree != null
+      ? tr("hero.folga", { pct: pct(weekFree), pace })
+      : tr("hero.folgaNone");
+    const todayLine = tr("hero.today", {
+      tokens: compact(S.today.tokens),
+      calls: int(S.today.requests),
+      cost: money(S.today.cost),
+    });
+    $("#heroTitle").innerHTML = `${greeting()}, ${esc(operatorName())}<span>.</span>`;
+    $("#heroText").innerHTML = `${sky} ${folga} ${todayLine}`;
+    $("#chipXpText").textContent = tr("hero.xp", { n: xpToday() });
+    $("#chipLive").title = tr("topbar.lastRead", { ago: ago(S.meta.router_age) });
+    $("#chipProviders").title = S.providers.map((p) => `${provName(p.provider)} · ${pct(p.share)}`).join(" · ");
+  }
+
+  const operatorName = () => state.operator || state.snap?.meta?.operator || tr("perfil.operatorFallback");
+
+  function xpToday() {
+    const completed = state.quests.filter((q) => q.done).reduce((sum, q) => sum + q.xp, 0);
+    return completed + Math.min(2, state.reviewed.size) * 10;
+  }
+
+  function setNum(el, value, format, duration = 620) {
+    if (!el) return;
+    const target = Number(value) || 0;
+    const from = Number(el.dataset.v || 0);
+    el.dataset.v = target;
+    if (Math.abs(target - from) < 0.01) { el.innerHTML = format(target); return; }
+    const start = performance.now();
+    const step = (now) => {
+      const p = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.innerHTML = format(from + (target - from) * eased);
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  function renderToday() {
+    const S = state.snap;
+    const today = S.today;
+    $("#tcLabel").textContent = tr("today.tokens", { label: tr("common.today") });
+    setNum($("#tcTokens"), today.tokens, (v) => `${compact(v)}<small>${tr("common.tokens")}</small>`);
+    setNum($("#tcCost"), today.cost, (v) => money(v), 500);
+    setNum($("#tcReqs"), today.requests, (v) => int(v), 500);
+    $("#tcCache").textContent = pct(S.totals.cacheHit);
+    const top = S.insights?.topModel;
+    $("#tcModel").textContent = top ? modelName(top.model) : "—";
+    $("#tcModel").title = top ? `${top.model} · ${provName(top.provider)}` : "";
+    const delta = Number(S.insights?.todayVsPrev);
+    const chip = $("#tcDelta");
+    if (Number.isFinite(delta)) {
+      chip.classList.toggle("down", delta < 0);
+      chip.textContent = tr("today.vsYesterday", { arrow: delta > 0 ? "▲" : "▼", pct: pct(Math.abs(delta), 0) });
+      chip.title = tr("today.deltaTitle");
+    } else {
+      chip.textContent = "—";
+    }
+  }
+
+  /* ---------------------------------------------------------- sun */
+
+  function renderSun() {
+    const states = state.sunStates;
+    if (!states.length) return;
+    const s = states[state.sunIndex % states.length];
+    const ring = $("#ringFill");
+    const pctValue = clamp(s.pct, 0, 100);
+    const C = 2 * Math.PI * 82;
+    ring.style.strokeDasharray = `${(C * pctValue) / 100} ${C}`;
+    ring.style.stroke = s.provider === "claude" ? "#d97757" : s.key.includes("session") ? "#37a6c8" : "#2f9e6b";
+    const codexQ = state.snap?.quota?.codex;
+    let eyebrow = s.eyebrow;
+    let sub = s.sub;
+    let tag = s.tag;
+    if (s.key === "codex-week") {
+      eyebrow = `${tr("sun.headroom")} · CODEX ${tr("sun.week")}`;
+      sub = until(s.reset);
+      if (codexQ?.available) tag = tr("sun.pace", { pace: pct(codexQ.pace), target: pct(codexQ.target) });
+    } else if (s.key === "codex-session") {
+      eyebrow = `${tr("sun.headroom")} · ${tr("sun.window5h")}`;
+      sub = until(s.reset);
+      tag = tr("sun.shortUse", { pct: pct(100 - pctValue, 0) });
+    } else if (s.key === "claude-week") {
+      eyebrow = `${tr("sun.headroom")} · CLAUDE ${tr("sun.week")}`;
+      sub = until(s.reset);
+      tag = tr("sun.claudeTag");
+    }
+    $("#sunEyebrow").textContent = eyebrow;
+    $("#sunPct").innerHTML = `${Math.round(pctValue)}<span>%</span>`;
+    $("#sunSub").textContent = sub;
+    $("#sunTag").textContent = tag;
+    const wrap = $("#sunGauge");
+    wrap.setAttribute("aria-label", tr("atlas.sunAria", { eyebrow, pct: Math.round(pctValue), tag }));
+    wrap.title = `${eyebrow} · ${tag} · ${tr("common.resetIn", { v: until(s.reset) })}`;
+    let dots = $(".sun-dots", wrap);
+    if (!dots) {
+      dots = document.createElement("div");
+      dots.className = "sun-dots";
+      wrap.appendChild(dots);
+    }
+    dots.innerHTML = states.map((x, i) => `<i class="sun-dot${i === state.sunIndex % states.length ? " on" : ""}"></i>`).join("");
+  }
+
+  function nextSun(manual = false) {
+    if (!state.sunStates.length) return;
+    state.sunIndex = (state.sunIndex + 1) % state.sunStates.length;
+    renderSun();
+    if (manual) {
+      const wrap = $("#sunGauge");
+      wrap.classList.remove("bump");
+      void wrap.offsetWidth;
+      wrap.classList.add("bump");
+    }
+  }
+
+  /* ---------------------------------------------------------- fleet */
+
+  function balloonSvg(color) {
+    return `<svg class="balloon" viewBox="0 0 40 58" fill="none" aria-hidden="true">
+      <path d="M20 2c8.8 0 15 6.2 15 14 0 7.2-5.4 12.6-11.9 14.2L20 34l-3.1-3.8C10.4 28.6 5 23.2 5 16 5 8.2 11.2 2 20 2z" fill="${color}"/>
+      <path d="M11.4 11.2c2.1-4 6.4-5.6 10-5.1-4.5 1.3-8 4.2-9.2 8.6-.8 3 .2 5.8 2 8.1-3.4-2.9-4.7-8.1-2.8-11.6z" fill="#fff" opacity=".28"/>
+      <path d="M16.9 32.6 20 36l3.1-3.4" stroke="${color}" stroke-width="1.2" opacity=".55"/>
+      <path d="M20 36v11" stroke="#7b959e" stroke-width="1"/>
+      <path d="M20 40l-4 3M20 45l4 3" stroke="#8aa0a9" stroke-width=".9" opacity=".7"/>
+      <rect x="15.5" y="47" width="9" height="7.5" rx="2" fill="#cf9a5c"/>
+      <path d="M15.5 49.3h9M15.5 52h9" stroke="#a97541" stroke-width=".7" opacity=".7"/>
+    </svg>`;
+  }
+
+  function sparkline(provider, color) {
+    const days = (state.snap.series || []).slice(-14);
+    const vals = days.map((d) => d.providers?.[provider]?.tokens || 0);
+    const max = Math.max(1, ...vals);
+    const W = 86, H = 14;
+    const pts = vals.map((v, i) => [(i / Math.max(1, vals.length - 1)) * W, H - 2 - (v / max) * (H - 4)]);
+    const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+      <path d="${d} L${W} ${H} L0 ${H} Z" fill="${color}" opacity=".12"/>
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
+  }
+
+  function renderFleet() {
+    const S = state.snap;
+    const rows = (S.providers || []).slice(0, 4);
+    const fleet = $("#fleet");
+    fleet.innerHTML = rows.map((p, idx) => {
+      const meta = provMeta(p.provider);
+      const active = state.focus === p.provider;
+      return `<button class="provider${active ? " active" : ""}" style="--pc:${meta.color}" data-act="provider" data-key="${esc(p.provider)}" title="${esc(meta.name)} · ${pct(p.share)} dos tokens · clique para filtrar e ver o manual" aria-pressed="${active}">
+        <span class="balloon-wrap" style="animation-delay:${idx * 0.1}s">${balloonSvg(meta.color)}</span>
+        <span class="prov-main">
+          <span class="prov-top"><span class="prov-name">${esc(meta.name)}</span><span class="prov-pct">${pct(p.share, 0).replace("%", "")}<small>%</small></span></span>
+          <span class="prov-bar"><i style="width:${clamp(p.share)}%"></i></span>
+          <span class="prov-meta"><span><b>${compact(p.tokens)}</b> tokens</span><span>${money(p.cost)}</span></span>
+          <span class="prov-spark">${sparkline(p.provider, meta.color)}<em>14d</em></span>
+        </span>
+      </button>`;
+    }).join("");
+    fleet.classList.toggle("has-focus", Boolean(state.focus));
+  }
+
+  /* ---------------------------------------------------------- chart */
+
+  function chartBuckets() {
+    const S = state.snap;
+    if (state.mode === "days") {
+      const days = (S.series || []).slice(-7);
+      return {
+        kind: "days",
+        items: days.map((d) => ({
+          key: d.date, label: d.label, title: `${longDate(d.date)} · ${d.label}`,
+          tokens: d.tokens, cost: d.cost, requests: d.requests, providers: d.providers || {}, date: d.date,
+        })),
+      };
+    }
+    const day = state.selectedDay || S.today.date;
+    const hours = S.hours?.[day] || [];
+    const dayMeta = S.series?.find((d) => d.date === day) || S.today;
+    return {
+      kind: "hours",
+      day,
+      dayMeta,
+      items: Array.from({ length: 24 }, (_, h) => {
+        const row = hours.find((x) => x.hour === h) || { hour: h, tokens: 0, cost: 0, requests: 0, providers: {} };
+        return {
+          key: h, label: `${String(h).padStart(2, "0")}h`,
+          title: `${String(h).padStart(2, "0")}:00 — ${String((h + 1) % 24).padStart(2, "0")}:00 · ${dayMeta?.label || day}`,
+          tokens: row.tokens, cost: row.cost, requests: row.requests, providers: row.providers || {}, date: day, hour: h,
+        };
+      }),
+    };
+  }
+
+  function renderChart() {
+    const S = state.snap;
+    const svg = $("#chart");
+    if (!S || !svg) return;
+    const bucket = chartBuckets();
+    state.chartItems = bucket.items;
+    state.bucketKind = bucket.kind;
+    const focus = state.focus;
+    const values = bucket.items.map((it) => focus ? (it.providers?.[focus]?.tokens || 0) : it.tokens);
+    const max = Math.max(1, ...values);
+    const W = 612, H = 178, L = 30, R = 6, T = 10, B = 18, PW = W - L - R, PH = H - T - B;
+    const n = bucket.items.length;
+    const gap = bucket.kind === "hours" ? 7 : 12;
+    const bw = Math.max(2, (PW - gap * (n - 1)) / n);
+    let out = "";
+    for (let i = 0; i <= 3; i++) {
+      const y = T + (PH * i) / 3;
+      out += `<line class="chart-grid" x1="${L}" y1="${y.toFixed(1)}" x2="${W - R}" y2="${y.toFixed(1)}"/>`;
+      out += `<text class="chart-axis" x="${L - 5}" y="${(y + 3).toFixed(1)}" text-anchor="end">${compact(max * (1 - i / 3))}</text>`;
+    }
+    bucket.items.forEach((it, idx) => {
+      const x = L + idx * (bw + gap);
+      const entries = Object.entries(it.providers || {})
+        .filter(([k, v]) => (v?.tokens || 0) > 0 && (!focus || k === focus))
+        .sort((a, b) => (a[1]?.tokens || 0) - (b[1]?.tokens || 0));
+      let y = T + PH;
+      entries.forEach(([k, v]) => {
+        const h = PH * ((v.tokens || 0) / max);
+        y -= h;
+        out += `<rect class="bar-seg" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${bw.toFixed(2)}" height="${Math.max(1, h).toFixed(2)}" rx="${bw > 7 ? 2 : 1}" fill="${provColor(k)}"/>`;
+      });
+      out += `<rect class="bar-col" data-i="${idx}" x="${(x - gap / 2).toFixed(2)}" y="${T}" width="${(bw + gap).toFixed(2)}" height="${PH}" fill="transparent"/>`;
+      if (bucket.kind === "hours" && idx % 3 === 0) {
+        out += `<text class="chart-axis" x="${(x + bw / 2).toFixed(1)}" y="${H - 5}" text-anchor="middle">${it.label}</text>`;
+      }
+      if (bucket.kind === "days") {
+        out += `<text class="chart-axis" x="${(x + bw / 2).toFixed(1)}" y="${H - 5}" text-anchor="middle">${esc(it.label.slice(0, 5))}</text>`;
+      }
+    });
+    if (max <= 1) {
+      out += `<text class="chart-empty" x="${L + PW / 2}" y="${T + PH / 2}" text-anchor="middle">${esc(tr("atlas.noData"))}</text>`;
+    }
+    if (bucket.kind === "hours" && bucket.day === S.today.date) {
+      const now = new Date();
+      const frac = now.getHours() + now.getMinutes() / 60;
+      const x = L + clamp(frac, 0, 23) * (bw + gap) + bw / 2;
+      out += `<line class="chart-now" x1="${x.toFixed(1)}" y1="${T}" x2="${x.toFixed(1)}" y2="${T + PH}"/>`;
+      out += `<text class="chart-nowlabel" x="${x > W - 44 ? x - 4 : x + 4}" y="${T + 7}" text-anchor="${x > W - 44 ? "end" : "start"}">${esc(tr("atlas.now"))}</text>`;
+    }
+    svg.innerHTML = out;
+    bindChartHover(svg);
+
+    const title = $("#chartTitle");
+    const sub = $("#chartSub");
+    const focusName = focus ? provName(focus) : "";
+    if (bucket.kind === "hours") {
+      const isToday = bucket.day === S.today.date;
+      title.textContent = isToday ? tr("atlas.chartTitle") : tr("atlas.hourByHour", { day: bucket.dayMeta?.label || bucket.day });
+      const parts = [tr("common.periodCalls", { n: int(bucket.dayMeta?.requests || 0) }), money(bucket.dayMeta?.cost || 0), `${compact(bucket.dayMeta?.tokens || 0)} ${tr("common.tokens")}`];
+      if (focus) parts.unshift(tr("atlas.filter", { name: focusName }));
+      sub.textContent = parts.join(" · ");
+    } else {
+      title.textContent = tr("atlas.weekTitle");
+      const total = bucket.items.reduce((a, b) => a + b.tokens, 0);
+      const cost = bucket.items.reduce((a, b) => a + b.cost, 0);
+      sub.textContent = `${compact(total)} ${tr("common.tokens")} · ${money(cost)}${focus ? ` · ${tr("atlas.filter", { name: focusName })}` : ""}`;
+    }
+
+    $$(".seg button", $("#chartSeg")).forEach((b) => b.classList.toggle("sel", b.dataset.mode === state.mode));
+  }
+
+  function bindChartHover(svg) {
+    const wrap = $(".chart-wrap");
+    let tip = $(".chart-tip", wrap);
+    if (!tip) {
+      tip = document.createElement("div");
+      tip.className = "chart-tip";
+      wrap.appendChild(tip);
+    }
+    const show = (idx, ev) => {
+      const item = state.chartItems[idx];
+      if (!item) return;
+      const entries = Object.entries(item.providers || {}).filter(([, v]) => (v?.tokens || 0) > 0).sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0));
+      const rows = state.focus ? entries.filter(([k]) => k === state.focus) : entries;
+      tip.innerHTML = `<div class="ct-title">${esc(item.title)}</div>
+        ${rows.map(([k, v]) => `<div class="ct-row"><i style="background:${provColor(k)}"></i><span>${esc(provName(k))}</span><b>${compact(v.tokens)}</b></div>`).join("") || `<div class="ct-row"><span>sem consumo</span><b>0</b></div>`}
+        <div class="ct-total"><span>${int(item.requests)} chamadas</span><b>${money(item.cost)}</b></div>`;
+      const r = wrap.getBoundingClientRect();
+      tip.style.left = `${clamp(ev.clientX - r.left, 80, r.width - 80)}px`;
+      tip.style.top = `${ev.clientY - r.top}px`;
+      tip.classList.add("on");
+    };
+    svg.onmouseover = (ev) => {
+      const hit = ev.target.closest?.("[data-i]");
+      if (hit) show(Number(hit.dataset.i), ev);
+    };
+    svg.onmousemove = (ev) => {
+      const hit = ev.target.closest?.("[data-i]");
+      if (hit) show(Number(hit.dataset.i), ev);
+    };
+    svg.onmouseleave = () => tip.classList.remove("on");
+    svg.onclick = (ev) => {
+      const hit = ev.target.closest?.("[data-i]");
+      if (hit) openBucketDrawer(Number(hit.dataset.i));
+    };
+  }
+
+  function renderTimeline() {
+    const S = state.snap;
+    const days = (S.series || []).slice(-7);
+    const max = Math.max(1, ...days.map((d) => d.tokens));
+    $("#timeline").innerHTML = days.map((d) => {
+      const on = state.mode === "today" && d.date === state.selectedDay;
+      return `<button class="tl-day${on ? " on" : ""}" data-act="day" data-date="${esc(d.date)}" title="${esc(longDate(d.date))} · ${compact(d.tokens)} tokens · ${money(d.cost)}" aria-pressed="${on}">
+        <span class="tl-top"><span>${esc(d.weekday)}</span><span>${esc(d.label.slice(0, 5))}</span></span>
+        <span class="tl-bar"><i style="width:${Math.max(2, (d.tokens / max) * 100)}%"></i></span>
+      </button>`;
+    }).join("");
+    const past = state.mode === "today" && state.selectedDay !== S.today.date;
+    $("#timeChip").hidden = !past;
+    if (past) {
+      const d = S.series.find((x) => x.date === state.selectedDay);
+      $("#timeChipText").textContent = `${d?.label || state.selectedDay} · ${compact(d?.tokens || 0)} tokens`;
+    }
+  }
+
+  function selectDay(date) {
+    state.mode = "today";
+    state.selectedDay = date;
+    renderTimeline();
+    renderChart();
+  }
+
+  function setMode(mode) {
+    state.mode = mode;
+    if (mode === "days") {
+      $("#timeChip").hidden = true;
+    } else {
+      renderTimeline();
+    }
+    renderChart();
+  }
+
+  /* ---------------------------------------------------------- quests + xp */
+
+  function computeQuests() {
+    const S = state.snap;
+    const t = S.totals;
+    const today = S.today;
+    const freeShare = t.tokens ? ((S.insights?.freeTokensEstimate || 0) / t.tokens) * 100 : 0;
+    const reviewed = Math.min(2, state.reviewed.size);
+    return [
+      { id: "cache", title: tr("quests.cacheTitle"), sub: tr("quests.cacheSub", { pct: pct(t.cacheHit) }), progress: clamp((t.cacheHit / 65) * 100), done: t.cacheHit >= 65, xp: 60 },
+      { id: "budget", title: tr("quests.budgetTitle", { limit: money(5) }), sub: tr("quests.budgetSub", { cost: money(today.cost) }), progress: clamp(today.cost <= 5 ? 100 : (5 / today.cost) * 100), done: today.cost <= 5, xp: 50 },
+      { id: "errors", title: tr("quests.errorsTitle"), sub: tr("quests.errorsSub", { n: reviewed }), progress: clamp((reviewed / 2) * 100), done: reviewed >= 2, xp: 70 },
+      { id: "free", title: tr("quests.freeTitle"), sub: tr("quests.freeSub", { pct: pct(freeShare) }), progress: clamp((freeShare / 25) * 100), done: freeShare >= 25, xp: 60 },
+      { id: "explore", title: tr("quests.exploreTitle"), sub: tr("quests.exploreSub", { n: Math.min(3, state.visited.size) }), progress: clamp((state.visited.size / 3) * 100), done: state.visited.size >= 3, xp: 30 },
+    ];
+  }
+
+  function renderQuests() {
+    const S = state.snap;
+    if (!S) return;
+    const quests = computeQuests();
+    state.quests = quests;
+    $("#quests").innerHTML = quests.slice(0, 4).map((q) => `<div class="quest${q.done ? " done" : ""}">
+      <span class="q-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span>
+      <span class="q-body">
+        <span class="q-top"><b>${esc(q.title)}</b><span>+${q.xp} XP</span></span>
+        <span class="q-sub">${esc(q.sub)}</span>
+        <span class="q-bar"><i style="width:${q.progress.toFixed(1)}%"></i></span>
+      </span>
+    </div>`).join("");
+    const doneNow = new Set(quests.filter((q) => q.done).map((q) => q.id));
+    if (state.ready) {
+      for (const id of doneNow) {
+        if (!state.doneSet.has(id)) {
+          const q = quests.find((x) => x.id === id);
+          confetti();
+          toast(`Missão concluída: ${q.title} · +${q.xp} XP`);
+        }
+      }
+    }
+    state.doneSet = doneNow;
+    renderXP();
+  }
+
+  function xpTotals() {
+    const base = state.snap ? state.snap.totals.activeDays * 15 : 0;
+    const completed = state.quests.filter((q) => q.done).reduce((s, q) => s + q.xp, 0);
+    const reviewed = Math.min(2, state.reviewed.size) * 10;
+    return { xp: base + completed + reviewed, today: xpToday() };
+  }
+
+  function levelFor(xp) {
+    const levels = [0, 100, 220, 380, 580, 820, 1100, 1420, 1800, 2220];
+    const names = Array.from({ length: 10 }, (_, i) => tr(`levels.${i}`));
+    let idx = 0;
+    for (let i = 0; i < levels.length; i++) if (xp >= levels[i]) idx = i;
+    const next = levels[Math.min(idx + 1, levels.length - 1)] || levels[idx] + 500;
+    const span = Math.max(1, next - levels[idx]);
+    return { level: idx + 1, name: names[idx], progress: clamp(((xp - levels[idx]) / span) * 100), next, current: levels[idx] };
+  }
+
+  function renderXP() {
+    const { xp, today } = xpTotals();
+    const lv = levelFor(xp);
+    $("#lvlBadge").textContent = lv.level;
+    $("#railLvl").textContent = lv.level;
+    $("#levelName").textContent = tr("quests.level", { n: lv.level, name: lv.name });
+    $("#xpVal").textContent = `${int(xp)} / ${int(lv.next)} XP`;
+    $("#xpBar").style.width = `${lv.progress}%`;
+    $("#xpRing").style.strokeDashoffset = `${94.2 * (1 - lv.progress / 100)}`;
+    $("#xpChip").textContent = `${today} XP hoje`;
+    $("#chipXpText").textContent = `+${today} XP hoje`;
+    $("#railXp").title = `Nível ${lv.level} · ${lv.name} · ${int(xp)} XP`;
+  }
+
+  /* ---------------------------------------------------------- cockpit */
+
+  function monthUsage() {
+    const S = state.snap;
+    if (!S?.today?.date) return null;
+    const month = S.today.date.slice(0, 7);
+    const rows = (S.series || []).filter((d) => String(d.date).slice(0, 7) === month);
+    const byProvider = {};
+    let cost = 0;
+    rows.forEach((d) => {
+      cost += Number(d.cost) || 0;
+      Object.entries(d.providers || {}).forEach(([key, val]) => {
+        byProvider[key] = (byProvider[key] || 0) + (Number(val?.cost) || 0);
+      });
+    });
+    const [year, mon, day] = S.today.date.split("-").map(Number);
+    const daysInMonth = new Date(year, mon, 0).getDate();
+    const elapsed = Math.max(1, day);
+    const projected = (cost / elapsed) * daysInMonth;
+    return { month, cost, byProvider, elapsed, daysInMonth, projected, days: rows.length };
+  }
+
+  function budgetStatus(spent, limit) {
+    if (!limit) return null;
+    const used = Number(spent) || 0;
+    const ratio = (used / limit) * 100;
+    const threshold = state.budgets.threshold;
+    const tone = ratio >= 100 ? "over" : ratio >= threshold ? "warn" : "ok";
+    return { pct: ratio, tone, left: limit - used };
+  }
+
+  function budgetAlerts() {
+    const u = monthUsage();
+    if (!u) return [];
+    const out = [];
+    const check = (label, spent, limit, key, isGlobal = false) => {
+      const st = budgetStatus(spent, limit);
+      if (!st || st.tone === "ok") return;
+      out.push({
+        tone: st.tone === "over" ? "bad" : "warn",
+        title: isGlobal ? tr("alert.budgetTotalTitle", { pct: dec(st.pct, 0) }) : tr("alert.budgetTitle", { provider: label, pct: dec(st.pct, 0) }),
+        detail: tr("alert.budgetDetail", { used: money(spent), limit: money(limit), month: tr("budget.month") }),
+        budget: key || "global",
+      });
+    };
+    check(tr("budget.total"), u.cost, state.budgets.global, "global", true);
+    Object.entries(state.budgets.providers).forEach(([key, limit]) => check(provName(key), u.byProvider[key] || 0, limit, key));
+    return out;
+  }
+
+  function allAlerts() {
+    return [...budgetAlerts(), ...(state.snap?.alerts || [])];
+  }
+
+  function renderCockpit() {
+    const S = state.snap;
+    if (!S) return;
+    const panes = $("#panes");
+    panes.innerHTML = paneAgora() + paneProviders() + paneErrors() + paneTips();
+    switchTab(state.tab || "agora", true);
+  }
+
+  function paneAgora() {
+    const S = state.snap;
+    const t = S.today;
+    const q = S.quota?.codex || {};
+    const claude = S.quota?.claude || {};
+    const quotas = [];
+    if (q.available) {
+      quotas.push({ key: "codex-week", label: `Codex · ${tr("sun.week")}`, free: q.week_free, reset: q.week_reset, color: "#2f9e6b", meta: tr("common.resetIn", { v: until(q.week_reset) }) });
+      quotas.push({ key: "codex-session", label: `Codex · ${tr("sun.window5h")}`, free: q.session_free, reset: q.session_reset, color: "#37a6c8", meta: tr("common.resetIn", { v: until(q.session_reset) }) });
+    }
+    if (claude.available) {
+      quotas.push({ key: "claude-week", label: `Claude · ${tr("sun.week")}`, free: claude.week_free, reset: claude.week_reset, color: "#d97757", meta: claude.credit_free != null ? tr("cockpit.creditFree", { pct: pct(claude.credit_free) }) : tr("sun.window5h") });
+    }
+    const actions = recommendedActions();
+    return `<div class="pane" data-pane="agora">
+      <div class="action-strip">
+        <div class="as-head"><b>${esc(tr("cockpit.actionTitle"))}</b><span>${esc(tr("cockpit.actionSub"))}</span></div>
+        ${actions.map((a) => `<button class="as-item" data-act="${a.act || "wing"}"${a.wing ? ` data-key="${a.wing}"` : ""}>
+          <span class="as-ico">→</span>
+          <span class="as-copy"><b>${esc(a.label)}</b><span>${esc(a.detail)}</span></span>
+          <em>${esc(tr("action.view"))}</em>
+        </button>`).join("")}
+      </div>
+      ${budgetStrip()}
+      <div class="now-grid">
+        <div class="now-stat accent"><span>${esc(tr("cockpit.tokensToday"))}</span><b>${compact(t.tokens)}</b><em>${tr("cockpit.callsN", { n: int(t.requests) })}</em></div>
+        <div class="now-stat"><span>${esc(tr("cockpit.costToday"))}</span><b>${money(t.cost)}</b><em>${tr("cockpit.perCall", { v: money(S.insights?.costPerReq || 0) })}</em></div>
+        <div class="now-stat"><span>${esc(tr("cockpit.cacheHit"))}</span><b>${pct(S.totals.cacheHit)}</b><em>${tr("cockpit.reused", { v: compact(t.cached) })}</em></div>
+        <div class="now-stat"><span>${esc(tr("cockpit.topModel"))}</span><b style="font-size:11px;line-height:1.3">${esc(modelName(S.insights?.topModel?.model))}</b><em>${tr("cockpit.share", { pct: pct(S.insights?.topModel?.share || 0) })}</em></div>
+      </div>
+      <div class="quota-list">
+        ${quotas.map((x) => `<button class="quota-row" style="--pc:${x.color}" data-act="quota" data-key="${esc(x.key)}" title="Ver detalhes da cota">
+          <span class="qr-dot"></span>
+          <span class="qr-main">
+            <span class="qr-top"><b>${esc(x.label)}</b><span>${pct(x.free, 0)} ${esc(tr("common.free"))}</span></span>
+            <span class="qr-bar"><i style="width:${clamp(x.free)}%"></i></span>
+          </span>
+          <span class="qr-meta">${esc(x.meta)}</span>
+        </button>`).join("")}
+        ${S.quota?.google && !S.quota.google.available ? `<button class="quota-row" style="--pc:#8b7ad4" data-act="quota" data-key="google"><span class="qr-dot"></span><span class="qr-main"><span class="qr-top"><b>Google · ${esc(tr("common.quota"))}</b><span>—</span></span><span class="qr-bar"><i style="width:100%;background:repeating-linear-gradient(115deg,rgba(139,122,212,.4) 0 5px,rgba(139,122,212,.12) 5px 10px)"></i></span></span><span class="qr-meta">${esc(tr("common.noToken"))}</span></button>` : ""}
+      </div>
+    </div>`;
+  }
+
+  function paneProviders() {
+    const S = state.snap;
+    const rows = (S.providers || []).map((p) => {
+      const quota = p.provider === "codex" ? S.quota?.codex?.week_free : p.provider === "claude" ? S.quota?.claude?.week_free : null;
+      const slo = (S.slo?.providers || []).find((x) => x.provider === p.provider);
+      const meta = slo ? `${int(p.requests)} chamadas · p95 ${latency(slo.p95)} · ${pct(slo.errorRate, 0)} erro` : `${int(p.requests)} chamadas · ${compact(p.tokens)} tokens`;
+      return `<button class="cockpit-row" style="--pc:${provColor(p.provider)}" data-act="provider-detail" data-key="${esc(p.provider)}">
+        <span class="cr-dot"></span>
+        <span class="cr-main"><b>${esc(provName(p.provider))}</b><span>${esc(meta)}</span></span>
+        <span class="cr-val"><b>${pct(p.share, 0)}</b><span>${money(p.cost)}</span></span>
+        <span class="cr-status"></span>
+      </button>`;
+    }).join("");
+    const conns = (S.connections || []).filter((c) => !(S.providers || []).some((p) => p.provider === c.provider));
+    return `<div class="pane" data-pane="provedores">
+      ${rows}
+      ${conns.length ? `<div style="margin:9px 6px 3px;font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:#8aa0a9;font-weight:700">Conexões sem uso no período</div>` : ""}
+      ${conns.map((c) => {
+        const ok = c.status === "active";
+        return `<button class="cockpit-row" style="--pc:${provColor(c.provider)}" data-act="provider-detail" data-key="${esc(c.provider)}">
+          <span class="cr-dot" style="opacity:${ok ? 1 : 0.45}"></span>
+          <span class="cr-main"><b>${esc(provName(c.provider))}</b><span>${esc(c.auth || "conexão")} · ${esc(maskEmail(c.name))}</span></span>
+          <span class="cr-val"><b style="font-size:8.5px;color:${ok ? "#287d59" : "#b0603c"}">${ok ? "ativa" : c.errorCode ? `erro ${c.errorCode}` : "off"}</b><span>${esc(c.plan || "—")}</span></span>
+          <span class="cr-status ${ok ? "" : "bad"}"></span>
+        </button>`;
+      }).join("")}
+    </div>`;
+  }
+
+  function paneErrors() {
+    const S = state.snap;
+    const errors = (S.errors || []).slice(0, 6);
+    return `<div class="pane" data-pane="erros">
+      ${errors.length ? errors.map((e, i) => {
+        const reviewed = state.reviewed.has(`${e.provider}|${e.model}|${e.diagnosis?.title}`);
+        return `<div class="err-item ${e.diagnosis?.tone === "bad" ? "bad" : "warn"}">
+          <div class="err-head"><span class="err-dot"></span><b>${esc(provName(e.provider))} · ${esc(e.diagnosis?.title || "Erro")}</b><span>${e.count}×</span></div>
+          <div class="err-body">${esc(e.message)}</div>
+          <div class="err-actions">
+            <button class="btn ghost" data-act="error-copy" data-i="${i}">${reviewed ? "✓ revisado" : "copiar prompt"}</button>
+            <button class="btn primary" data-act="error-detail" data-i="${i}">detalhes</button>
+          </div>
+        </div>`;
+      }).join("") : `<div class="cockpit-empty">Nenhum erro no período. O céu está limpo.</div>`}
+    </div>`;
+  }
+
+  function paneTips() {
+    const S = state.snap;
+    const tips = [];
+    const q = S.quota?.codex;
+    if (q?.available && q.week_free > 40) tips.push({ tone: "ok", icon: "✦", title: "Folga confortável no Codex", body: `${pct(q.week_free, 0)} livre; dá para reservar modelos maiores para arquitetura.`, q: "Quanta folga eu tenho e como usar o excedente?" });
+    if (S.totals.cacheHit > 60) tips.push({ tone: "ok", icon: "⚡", title: "Cache está segurando o custo", body: `${pct(S.totals.cacheHit)} de acerto. Repita contexto e sessões para manter.`, q: "Como manter o cache alto?" });
+    tips.push({ tone: "ok", icon: "◈", title: "Comparar com outra IA", body: "O Manual da Frota mostra para que serve cada provedor conectado.", q: "Qual IA devo usar para cada tarefa?" });
+    (S.suggestions || []).slice(0, 3).forEach((s) => tips.push({ tone: s.level === "warn" ? "warn" : "ok", icon: s.level === "warn" ? "!" : "→", title: s.title, body: String(s.detail).slice(0, 120), q: `Como resolvo: ${s.title}?` }));
+    return `<div class="pane" data-pane="dicas">
+      ${tips.slice(0, 6).map((t) => `<button class="tip-item ${t.tone === "warn" ? "warn" : ""}" data-act="ask" data-q="${esc(t.q)}">
+        <span class="tip-ico">${t.icon}</span>
+        <span class="tip-body"><b>${esc(t.title)}</b><span>${esc(t.body)}</span></span>
+      </button>`).join("")}
+    </div>`;
+  }
+
+  function switchTab(tab, silent = false) {
+    state.tab = tab || "agora";
+    $$(".tabs .tab").forEach((b) => {
+      const on = b.dataset.tab === state.tab;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", String(on));
+    });
+    $$("#panes .pane").forEach((p) => p.classList.toggle("active", p.dataset.pane === state.tab));
+    const titles = { agora: "Agora", provedores: "Provedores", erros: "Erros", dicas: "Dicas" };
+    $("#cockpitTitle").textContent = titles[state.tab] || "Agora";
+    if (!silent) {
+      const pane = $(".pane.active", $("#panes"));
+      if (pane) pane.scrollTop = 0;
+    }
+  }
+
+  /* ---------------------------------------------------------- band + ticker + pip */
+
+  function renderBand() {
+    const S = state.snap;
+    const recent = (S.recent || []).slice(0, 4);
+    $("#liveSub").textContent = tr("atlas.liveSub", { n: int(S.totals.requests), ago: ago(S.meta.router_age) });
+    $("#feed").innerHTML = recent.map((r) => `<div class="feed-row" style="--pc:${provColor(r.provider)}">
+      <span class="feed-time">${esc(r.time)}</span>
+      <span class="feed-dot"></span>
+      <span class="feed-main"><b title="${esc(r.model)}">${esc(modelName(r.model))}</b><small>${esc(provName(r.provider))}</small></span>
+      <span class="feed-tok">${compact((r.input || 0) + (r.output || 0))}</span>
+      <span class="feed-cost">${money(r.cost)}</span>
+    </div>`).join("");
+
+    const alerts = allAlerts();
+    $("#radarCount").textContent = alerts.length;
+    const bad = alerts.filter((a) => a.tone === "bad").length;
+    const warn = alerts.filter((a) => a.tone === "warn").length;
+    const critical = bad === 1 ? tr("atlas.criticalOne") : tr("atlas.criticalMany", { n: bad });
+    const warnings = warn === 1 ? tr("atlas.warnOne") : tr("atlas.warnMany", { n: warn });
+    $("#radarSub").textContent = `${critical} · ${warnings}`;
+    $("#radar").innerHTML = alerts.slice(0, 2).map((a, i) => `<button class="radar-item ${esc(a.tone)}" data-act="radar" data-i="${i}" title="${esc(a.detail)}">
+      <span class="radar-ico">${a.tone === "bad" ? "!" : a.tone === "warn" ? "~" : "→"}</span>
+      <span class="radar-body"><b>${esc(a.title)}</b><span>${esc(a.detail)}</span></span>
+    </button>`).join("") + (alerts.length > 2 ? `<button class="radar-more" data-act="wing" data-key="ajuda">${esc(tr("atlas.radarMore", { n: alerts.length - 2 }))}</button>` : "");
+  }
+
+  function renderTicker() {
+    const S = state.snap;
+    const q = S.quota?.codex;
+    const items = [
+      { html: `<b>${compact(S.today.tokens)}</b> tokens hoje`, wing: "fluxo" },
+      { html: `<b>${money(S.today.cost)}</b> hoje`, wing: "fluxo" },
+      { html: `<b>${pct(S.totals.cacheHit)}</b> cache`, wing: "fluxo" },
+      { html: `<b>${esc(provName(S.insights?.topProvider?.provider))}</b> lidera com ${pct(S.insights?.topProvider?.share || 0)}`, wing: "fluxo" },
+      q?.available ? { html: `<b>${pct(q.week_free, 0)}</b> de folga no Codex`, wing: "fluxo" } : null,
+      { html: `<b>${(S.errors || []).length}</b> diagnósticos abertos`, wing: "ajuda" },
+      { html: `<b>${S.qoder?.sessions?.length || 0}</b> sessões Qoder`, wing: "sessoes" },
+      { html: `<b>${S.qoder?.skills?.total || 0}</b> skills carregadas`, wing: "oficina" },
+      { html: `<b>${compact(S.insights?.freeTokensEstimate || 0)}</b> tokens grátis`, wing: "biblioteca" },
+      { html: `manual da frota: <b>${Object.keys(KNOWLEDGE).length}</b> IAs`, wing: "biblioteca" },
+      { html: `headroom <b>${S.router?.headroom?.online ? "online" : "offline"}</b>`, wing: "ajuda" },
+    ].filter(Boolean);
+    const html = items.map((x) => `<span class="tick" data-act="wing" data-key="${x.wing}">${x.html}</span>`).join("");
+    $("#tickerRow").innerHTML = html + html;
+    $("#tickerHint").textContent = "v0.1 · 127.0.0.1";
+  }
+
+  function pipTips() {
+    const S = state.snap;
+    if (!S) return ["Lendo seus dados locais…"];
+    const q = S.quota?.codex;
+    const tips = [];
+    if (q?.available) tips.push(`A janela do Codex tem ${pct(q.week_free, 0)} de folga. Quer um plano de 3 ações?`);
+    tips.push(`Hoje foram ${compact(S.today.tokens)} tokens. ${pct(S.totals.cacheHit)} veio do cache.`);
+    if ((S.errors || []).length) tips.push(`Tem ${S.errors.length} erros diagnosticados. Posso montar o prompt de correção.`);
+    tips.push("Clique em um balão para ver o manual daquela IA e filtrar o gráfico.");
+    tips.push("Pergunte “qual IA usar para esta tarefa?” e eu comparo a frota.");
+    return tips;
+  }
+
+  function renderPipTip(initial = false) {
+    const tips = pipTips();
+    const tip = $("#pipTip");
+    if (!tip) return;
+    const show = (idx) => {
+      tip.textContent = tips[idx % tips.length];
+      const pip = $("#pipCompanion");
+      pip.classList.add("tip-on");
+      clearTimeout(renderPipTip._t);
+      renderPipTip._t = setTimeout(() => pip.classList.remove("tip-on"), 7800);
+    };
+    if (initial) {
+      setTimeout(() => show(state.pipIndex), 2200);
+      if (!renderPipTip._timer) {
+        renderPipTip._timer = setInterval(() => {
+          state.pipIndex = (state.pipIndex + 1) % tips.length;
+          show(state.pipIndex);
+        }, 11500);
+      }
+    } else {
+      show(state.pipIndex);
+    }
+  }
+
+  /* ---------------------------------------------------------- clocks */
+
+  function startClocks() {
+    setInterval(() => {
+      if (!state.snap) return;
+      updateAgeLabels();
+      const age = state.snap.meta.router_age + (Date.now() - state.loadedAt) / 1000;
+      $("#chipLiveText").textContent = `coleta ${ago(age)}`;
+      $("#livePill").classList.toggle("stale", age > 1800);
+      $("#cockpitLive").textContent = state.busy ? "coletando" : "ao vivo";
+    }, 15000);
+    setInterval(() => {
+      if (state.sunPaused || !state.snap) return;
+      nextSun(false);
+    }, 7600);
+    setInterval(() => {
+      if (!state.snap || state.busy) return;
+      if (Date.now() - state.loadedAt > 60000) loadSnapshot();
+    }, 70000);
+  }
+
+  function updateAgeLabels() {
+    if (!state.snap) return;
+    const age = state.snap.meta.router_age + (Date.now() - state.loadedAt) / 1000;
+    $("#chipLive").title = `Última leitura do 9router: ${ago(age)}`;
+  }
+
+  /* ---------------------------------------------------------- refresh / light */
+
+  async function refreshData() {
+    if (state.busy) return;
+    state.busy = true;
+    const btn = $("#refreshBtn");
+    btn.classList.add("busy");
+    $("#liveLabel").textContent = "coletando";
+    $("#livePill").classList.add("busy");
+    $("#cockpitLive").textContent = "coletando";
+    try {
+      const res = await fetch("/api/refresh", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      applySnapshot(data.snapshot);
+      confetti();
+      toast(`Dados atualizados em ${data.seconds}s · ${compact(data.snapshot.today.tokens)} tokens hoje`);
+    } catch (err) {
+      toast(`Falha ao atualizar: ${err.message}`, "bad");
+      $("#livePill").classList.add("stale");
+    } finally {
+      state.busy = false;
+      btn.classList.remove("busy");
+      $("#livePill").classList.remove("busy");
+      $("#cockpitLive").textContent = "ao vivo";
+      renderTopbar();
+    }
+  }
+
+  function toggleLight() {
+    const dusk = app.dataset.light !== "dusk";
+    app.dataset.light = dusk ? "dusk" : "day";
+    $("#lightLabel").textContent = tr(dusk ? "topbar.dusk" : "topbar.day");
+    store.set("light", dusk ? "dusk" : "day");
+    toast(dusk ? "Modo crepúsculo · constelações ligadas" : "Modo dia · céu aberto");
+  }
+
+  /* ---------------------------------------------------------- toast / confetti / copy */
+
+  function toast(message, tone = "ok") {
+    const wrap = $("#toasts");
+    const el = document.createElement("div");
+    el.className = `toast ${tone}`;
+    const icon = tone === "bad" ? "!" : tone === "warn" ? "~" : "✓";
+    el.innerHTML = `<span class="t-ico">${icon}</span><span>${esc(message)}</span>`;
+    wrap.appendChild(el);
+    setTimeout(() => {
+      el.classList.add("out");
+      setTimeout(() => el.remove(), 320);
+    }, 3400);
+  }
+
+  function confetti() {
+    const wrap = $("#confetti");
+    if (!wrap) return;
+    const colors = ["#2f9e6b", "#f4bd4a", "#37a6c8", "#e8835f", "#8b7ad4", "#7dcf9f"];
+    for (let i = 0; i < 34; i++) {
+      const p = document.createElement("i");
+      p.style.left = `${Math.random() * 100}%`;
+      p.style.background = colors[Math.floor(Math.random() * colors.length)];
+      p.style.animationDelay = `${Math.random() * 0.25}s`;
+      p.style.animationDuration = `${1.2 + Math.random() * 0.7}s`;
+      p.style.transform = `rotate(${Math.random() * 180}deg)`;
+      wrap.appendChild(p);
+      setTimeout(() => p.remove(), 2200);
+    }
+  }
+
+  async function copyText(text, label = "Copiado") {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      toast(label);
+      return true;
+    } catch {
+      toast("Não foi possível copiar neste navegador", "bad");
+      return false;
+    }
+  }
+
+  /* ---------------------------------------------------------- delegated actions */
+
+  const ACTIONS = {};
+  const act = (name, fn) => { ACTIONS[name] = fn; };
+
+  function bindDelegates() {
+    app.addEventListener("click", (ev) => {
+      const el = ev.target.closest?.("[data-act]");
+      if (!el) return;
+      const fn = ACTIONS[el.dataset.act];
+      if (!fn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      fn(el, ev);
+    });
+  }
+
+  act("wing", (el) => { closeDrawer(); openWing(el.dataset.key); });
+  act("guide", () => openGuideDrawer());
+  act("settings", () => openSettingsDrawer());
+  act("settings-close", () => closeDrawer());
+  act("budget", () => openBudgetDrawer());
+  act("budget-save", () => saveBudgets());
+  act("budget-threshold", (el) => {
+    state.budgets = normalizeBudgets({ ...state.budgets, threshold: Number(el.dataset.v) });
+    store.set("budgets", state.budgets);
+    renderBudgetBody();
+    if (state.snap) { renderCockpit(); renderBand(); }
+  });
+  act("budget-reset", () => {
+    state.budgets = normalizeBudgets({});
+    store.set("budgets", state.budgets);
+    renderBudgetBody();
+    if (state.snap) { renderCockpit(); renderBand(); }
+    toast(tr("budget.saved"));
+  });
+  act("sec-refresh", () => { state.security = null; loadSecurity(); });
+  act("sec-copy", (el) => copyText(el.dataset.fix, tr("security.copied")));
+  act("set-lang", (el) => {
+    if (el.dataset.lang === state.lang) return;
+    state.lang = el.dataset.lang;
+    applyPrefs();
+  });
+  act("set-currency", (el) => {
+    if (el.dataset.currency === state.currency) return;
+    state.currency = el.dataset.currency;
+    applyPrefs();
+  });
+  act("refresh", () => refreshData());
+  act("light", () => toggleLight());
+  act("palette", () => openPalette());
+  act("tour", () => startTour());
+  act("day", (el) => selectDay(el.dataset.date));
+  act("day-reset", () => selectDay(state.snap.today.date));
+  act("provider", (el) => toggleProvider(el.dataset.key));
+  act("provider-detail", (el) => openProviderDrawer(el.dataset.key));
+  act("focus-only", (el) => {
+    state.focus = el.dataset.key;
+    renderFleet();
+    renderChart();
+    closeDrawer();
+    closeWing();
+    toast(`Atlas filtrado por ${provName(el.dataset.key)}`);
+  });
+  act("focus-clear", () => { state.focus = ""; renderFleet(); renderChart(); closeDrawer(); toast("Filtro removido"); });
+  act("quota", (el) => openQuotaDrawer(el.dataset.key));
+  act("bucket", (el) => openBucketDrawer(Number(el.dataset.i)));
+  act("error-detail", (el) => { markReviewed(Number(el.dataset.i)); openErrorDrawer(Number(el.dataset.i)); });
+  act("error-copy", (el) => copyErrorPrompt(Number(el.dataset.i)));
+  act("session", (el) => openSessionDrawer(el.dataset.id));
+  act("project", (el) => openProjectDrawer(el.dataset.key));
+  act("radar", (el) => openRadar(Number(el.dataset.i)));
+  act("ask", (el) => { openWing("oraculo"); setTimeout(() => sendChat(el.dataset.q), 320); });
+  act("copy-context", () => copyText(buildContextPrompt(), "Contexto da operação copiado"));
+  act("copy-diag", () => copyText(buildDiagnosticPrompt(), "Diagnóstico completo copiado"));
+  act("copy-report", () => copyText(buildReport(), "Relatório em Markdown copiado"));
+  act("copy-error", (el) => copyErrorPrompt(Number(el.dataset.i)));
+  act("export-json", () => exportJson());
+  act("export-csv", () => exportCsv());
+  act("open-url", (el) => {
+    const url = String(el.dataset.url || "");
+    if (!/^https?:\/\//i.test(url)) { toast("Link indisponível neste snapshot", "warn"); return; }
+    window.open(url, "_blank", "noopener");
+  });
+  act("palette-run", (el) => {
+    const entry = state.palette[Number(el.dataset.i)];
+    closePalette();
+    if (entry?.run) setTimeout(entry.run, 60);
+  });
+  act("vote", (el) => vote(el.dataset.key));
+  act("clear-chat", () => { state.chat = []; if (state.wing === "oraculo") renderWing("oraculo"); });
+  act("chat-quick", (el) => sendChat(el.dataset.q));
+  act("sim-days", (el) => setProjection(Number(el.dataset.days)));
+  act("toggle-drawer", (el) => { const k = el.dataset.key; state.focus = k; renderFleet(); renderChart(); });
+  act("help-error", (el) => openErrorDrawer(Number(el.dataset.i)));
+
+  function toggleProvider(key) {
+    if (state.focus === key) {
+      state.focus = "";
+      renderFleet();
+      renderChart();
+      closeDrawer();
+      toast("Filtro removido");
+      return;
+    }
+    state.focus = key;
+    renderFleet();
+    renderChart();
+    openProviderDrawer(key);
+  }
+
+  /* ---------------------------------------------------------- chrome bindings */
+
+  function bindChrome() {
+    $("#brandBtn").addEventListener("click", () => {
+      closePalette(); closeDrawer(); closeWing();
+    });
+    $("#refreshBtn").addEventListener("click", refreshData);
+    $("#searchBtn").addEventListener("click", openPalette);
+    $("#lightToggle").addEventListener("click", toggleLight);
+    $("#streak").addEventListener("click", () => openWing("diario"));
+    $("#avatarBtn").addEventListener("click", () => openWing("perfil"));
+    $("#localeBtn").addEventListener("click", openSettingsDrawer);
+    $("#guideBtn").addEventListener("click", openGuideDrawer);
+    $("#startChip").addEventListener("click", openGuideDrawer);
+    $("#livePill").addEventListener("click", () => openWing("perfil"));
+    $("#chipProviders").addEventListener("click", () => openWing("fluxo"));
+    $("#chipXp").addEventListener("click", () => openWing("diario"));
+    $("#chipLive").addEventListener("click", refreshData);
+    $("#timeChip").addEventListener("click", () => selectDay(state.snap.today.date));
+    $("#chipXp").title = "Abrir Diário e conquistas";
+    $("#sunGauge").addEventListener("click", () => nextSun(true));
+    $("#sunGauge").addEventListener("dblclick", () => {
+      const s = state.sunStates[state.sunIndex];
+      if (s) openQuotaDrawer(s.key);
+    });
+    $("#sunGauge").addEventListener("mouseenter", () => { state.sunPaused = true; });
+    $("#sunGauge").addEventListener("mouseleave", () => { state.sunPaused = false; });
+    $("#sunGauge").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); nextSun(true); }
+    });
+    $$(".seg button", $("#chartSeg")).forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+    $("#chartExpand").addEventListener("click", () => openWing("fluxo"));
+    $("#liveMore").addEventListener("click", () => openWing("sessoes"));
+    $$(".tabs .tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+    $$(".rail-btn[data-wing]").forEach((b) => b.addEventListener("click", () => openWing(b.dataset.wing)));
+    $("#railXp").addEventListener("click", () => openWing("diario"));
+    $("#wingClose").addEventListener("click", closeWing);
+    $("#wingBack").addEventListener("click", closeWing);
+    $("#wingBackdrop").addEventListener("click", closeWing);
+    $("#drawerClose").addEventListener("click", closeDrawer);
+    $("#drawerScrim").addEventListener("click", closeDrawer);
+    $("#paletteScrim").addEventListener("click", closePalette);
+    $("#paletteInput").addEventListener("input", (e) => renderPalette(e.target.value));
+    $("#paletteInput").addEventListener("keydown", paletteKeys);
+    $("#tourSkip").addEventListener("click", () => endTour(true));
+    $("#tourNext").addEventListener("click", advanceTour);
+    $("#pipCompanion").addEventListener("click", () => openWing("oraculo"));
+    $("#pipCompanion").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWing("oraculo"); } });
+    window.addEventListener("resize", scaleStage);
+    const savedLight = store.get("light", "day");
+    if (savedLight === "dusk") {
+      app.dataset.light = "dusk";
+      $("#lightLabel").textContent = "Noite";
+    }
+  }
+
+  /* ---------------------------------------------------------- keyboard */
+
+  function bindKeyboard() {
+    document.addEventListener("keydown", (ev) => {
+      const typing = /^(input|textarea|select)$/i.test(ev.target.tagName) || ev.target.isContentEditable;
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") {
+        ev.preventDefault();
+        if ($("#palette").hidden) openPalette(); else closePalette();
+        return;
+      }
+      if (ev.key === "Escape") {
+        if (!$("#tour").hidden) endTour(true);
+        else if (!$("#palette").hidden) closePalette();
+        else if (!$("#drawer").hidden) closeDrawer();
+        else if (state.wing) closeWing();
+        return;
+      }
+      if (typing) return;
+      if (ev.key === "?") { ev.preventDefault(); startTour(); return; }
+      if (ev.key.toLowerCase() === "r") { ev.preventDefault(); refreshData(); return; }
+      if (ev.key.toLowerCase() === "d") { ev.preventDefault(); toggleLight(); return; }
+      if (ev.key === "/") { ev.preventDefault(); openPalette(); return; }
+      if (/^[1-9]$/.test(ev.key)) { openWing(WING_ORDER[Number(ev.key) - 1]); return; }
+      if (ev.key === "0") { openWing("ajuda"); }
+    });
+  }
+
+  /* ---------------------------------------------------------- wings shell */
+
+  function openWing(key) {
+    if (!WINGS[key]) return;
+    if (key === "atlas") { closeWing(); return; }
+    if (!state.snap) { toast("Os dados ainda estão carregando", "warn"); return; }
+    closePalette();
+    state.wing = key;
+    state.visited.add(key);
+    store.set("visited", [...state.visited]);
+    const meta = WINGS[key];
+    $("#wingIcon").innerHTML = railIcon(key);
+    $("#wingEyebrow").textContent = meta.eyebrow;
+    $("#wingTitle").textContent = tr(`nav.${key}`);
+    $("#wingSub").textContent = tr(`wings.${key}.sub`);
+    $("#crumbNow").textContent = tr(`nav.${key}`);
+    $("#brandChip").textContent = key;
+    $$(".rail-btn[data-wing]").forEach((b) => b.classList.toggle("active", b.dataset.wing === key));
+    $("#wing").hidden = false;
+    void $("#wing").offsetWidth;
+    $("#wing").classList.add("open");
+    renderWing(key);
+    $("#wingBody").scrollTop = 0;
+    renderQuests();
+  }
+
+  function closeWing() {
+    if (!state.wing) return;
+    const overlay = $("#wing");
+    overlay.classList.remove("open");
+    state.wing = null;
+    setTimeout(() => { if (!state.wing) overlay.hidden = true; }, 320);
+    $("#crumbNow").textContent = tr("nav.atlas");
+    $("#brandChip").textContent = "atlas";
+    $$(".rail-btn[data-wing]").forEach((b) => b.classList.toggle("active", b.dataset.wing === "atlas"));
+  }
+
+  function renderWing(key, opts = {}) {
+    const renderer = WING_RENDERERS[key];
+    if (!renderer) return;
+    const scroll = opts.preserve ? $("#wingBody").scrollTop : 0;
+    $("#wingBody").innerHTML = `<div class="w-loading">Montando ${esc(tr(`nav.${key}`))}…</div>`;
+    $("#wingActions").innerHTML = wingActions(key);
+    const html = renderer();
+    $("#wingBody").innerHTML = html;
+    bindWing(key);
+    if (opts.preserve) $("#wingBody").scrollTop = scroll;
+    renderQuests();
+  }
+
+  function wingActions(key) {
+    const S = state.snap;
+    const actions = {
+      fluxo: `<button class="btn ghost" data-act="copy-report">Copiar relatório</button><button class="btn primary" data-act="open-url" data-url="${esc(S.router.links?.find((l) => l.label === "Abrir 9router")?.url || "")}">Abrir 9router</button>`,
+      sessoes: `<button class="btn ghost" data-act="copy-context">Copiar contexto</button>`,
+      oficina: `<button class="btn ghost" data-act="ask" data-q="Como reduzir o desperdício de leituras repetidas e skills?">Pedir plano</button>`,
+      oraculo: `<button class="btn ghost" data-act="copy-context">Copiar contexto</button><button class="btn primary" data-act="copy-diag">Diagnóstico</button>`,
+      biblioteca: `<button class="btn ghost" data-act="ask" data-q="Qual IA devo usar para cada tipo de tarefa?">Perguntar ao Oráculo</button>`,
+      diario: `<button class="btn ghost" data-act="copy-report">Copiar changelog</button>`,
+      guilda: `<button class="btn ghost" data-act="copy-report">Copiar release</button>`,
+      perfil: `<button class="btn ghost" data-act="copy-diag">Diagnóstico</button><button class="btn primary" data-act="export-json">Exportar JSON</button>`,
+      ajuda: `<button class="btn primary" data-act="copy-diag">Copiar diagnóstico</button>`,
+    };
+    return actions[key] || "";
+  }
+
+  /* ---------------------------------------------------------- drawers */
+
+  function openDrawer(html) {
+    state.settingsOpen = false;
+    state.budgetOpen = false;
+    $("#drawerBody").innerHTML = html;
+    $("#drawer").hidden = false;
+    $("#drawer").setAttribute("aria-hidden", "false");
+    void $("#drawer").offsetWidth;
+    $("#drawer").classList.add("open");
+  }
+
+  function closeDrawer() {
+    const d = $("#drawer");
+    d.classList.remove("open");
+    d.setAttribute("aria-hidden", "true");
+    state.settingsOpen = false;
+    state.budgetOpen = false;
+    setTimeout(() => { if (!d.classList.contains("open")) d.hidden = true; }, 300);
+  }
+
+  /* ---------------------------------------------------------- language + currency */
+
+  function applyShellTranslations() {
+    document.documentElement.lang = locale();
+    $$("[data-i18n]").forEach((el) => { el.textContent = tr(el.dataset.i18n); });
+    $$(".rail-btn[data-wing]").forEach((b) => {
+      const key = b.dataset.wing;
+      const label = tr(`nav.${key}`);
+      b.dataset.label = label;
+      b.title = `${label} · ${tr(`wings.${key}.sub`)}`;
+      let lab = b.querySelector(".rail-label");
+      if (!lab) { lab = document.createElement("small"); lab.className = "rail-label"; b.appendChild(lab); }
+      lab.textContent = label;
+    });
+    $$(".tabs .tab").forEach((b) => {
+      const names = { agora: "now", provedores: "providers", erros: "errors", dicas: "tips" };
+      b.textContent = tr(`cockpit.${names[b.dataset.tab] || b.dataset.tab}`);
+    });
+    const dusk = app.dataset.light === "dusk";
+    $("#lightLabel").textContent = tr(dusk ? "topbar.dusk" : "topbar.day");
+    $("#localeLabel").textContent = `${state.lang.toUpperCase()} · ${CURRENCIES[state.currency]}`;
+    $("#localeBtn").title = tr("topbar.locale");
+    $("#guideBtn").title = tr("topbar.guide");
+    const searchSpan = $("#searchBtn span");
+    if (searchSpan) searchSpan.textContent = tr("topbar.search");
+    $("#streak").title = `${state.snap ? int(state.snap.totals.activeDays) : ""} · ${tr("common.days")}`;
+    const lvlBadge = $("#lvlBadge");
+    if (lvlBadge && state.snap) {
+      const lv = levelFor(xpTotals().xp);
+      lvlBadge.textContent = lv.level;
+    }
+    if (state.wing) {
+      $("#wingTitle").textContent = tr(`nav.${state.wing}`);
+      $("#wingSub").textContent = tr(`wings.${state.wing}.sub`);
+      $("#crumbNow").textContent = tr(`nav.${state.wing}`);
+    } else {
+      $("#crumbNow").textContent = tr("nav.atlas");
+    }
+  }
+
+  function applyPrefs() {
+    store.set("lang", state.lang);
+    store.set("currency", state.currency);
+    store.set("rates", state.rates);
+    applyShellTranslations();
+    if (state.snap) applySnapshot(state.snap);
+    if (state.settingsOpen) renderSettingsBody();
+    if (state.budgetOpen) renderBudgetBody();
+    toast(tr("settings.saved"));
+  }
+
+  function openSettingsDrawer() {
+    state.settingsOpen = true;
+    state.budgetOpen = false;
+    renderSettingsBody();
+    $("#drawer").hidden = false;
+    $("#drawer").setAttribute("aria-hidden", "false");
+    void $("#drawer").offsetWidth;
+    $("#drawer").classList.add("open");
+  }
+
+  function renderSettingsBody() {
+    const languages = (I18N?.languages || []).map((l) => `
+      <button class="set-opt${l.code === state.lang ? " on" : ""}" data-act="set-lang" data-lang="${l.code}">
+        <b>${esc(l.label)}</b><span>${esc(l.region)}</span>
+      </button>`).join("");
+    const currencies = [
+      ["BRL", tr("settings.brl"), "R$"],
+      ["USD", tr("settings.usd"), "$"],
+      ["EUR", tr("settings.eur"), "€"],
+    ].map(([code, label, symbol]) => `
+      <button class="set-opt${code === state.currency ? " on" : ""}" data-act="set-currency" data-currency="${code}">
+        <b>${symbol} · ${esc(code)}</b><span>${esc(label)}</span>
+      </button>`).join("");
+    const rates = ["USD", "EUR"].map((code) => `
+      <label class="set-rate">
+        <span>1 ${code} =</span>
+        <input type="number" name="rate-${code}" step="0.01" min="0.01" value="${Number(state.rates[code] || 0).toFixed(2)}" data-rate="${code}" aria-label="1 ${code} em BRL">
+        <em>BRL</em>
+      </label>`).join("");
+    const langLabel = (I18N?.languages || []).find((l) => l.code === state.lang)?.label || state.lang;
+    $("#drawerBody").innerHTML = `
+      <span class="drw-eyebrow">${esc(tr("settings.eyebrow"))}</span>
+      <div class="drw-head">
+        <span class="drw-mark" style="--pc:#4a8bf5">A</span>
+        <div><h2>${esc(tr("settings.title"))}</h2><p>${esc(tr("settings.currencySub"))}</p></div>
+      </div>
+      <div class="drw-section"><h3>${esc(tr("settings.language"))}</h3><div class="set-grid">${languages}</div><div class="drw-note">${esc(tr("settings.languageSub"))}</div></div>
+      <div class="drw-section"><h3>${esc(tr("settings.currency"))}</h3><div class="set-grid">${currencies}</div></div>
+      <div class="drw-section"><h3>${esc(tr("settings.rates"))}</h3><div class="set-rates">${rates}</div><div class="drw-note">${esc(tr("settings.ratesNote"))}</div></div>
+      <div class="drw-note">${esc(tr("settings.beta", { lang: langLabel }))}</div>
+      <div class="drw-actions"><button class="btn primary" data-act="settings-close">${esc(tr("common.done"))}</button></div>
+    `;
+    $$("#drawerBody [data-rate]").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        const code = inp.dataset.rate;
+        const value = Number(String(inp.value).replace(",", "."));
+        if (value > 0) {
+          state.rates[code] = value;
+          store.set("rates", state.rates);
+          if (state.snap) applySnapshot(state.snap);
+        }
+      });
+    });
+  }
+
+  function openGuideDrawer() {
+    const wings = WING_ORDER.map((k) => `<button class="guide-wing" data-act="wing" data-key="${k}"><b>${esc(tr(`nav.${k}`))}</b><span>${esc(tr(`guide.${k}`))}</span></button>`).join("");
+    const steps = [
+      { n: 1, key: "perfil", title: "onboarding.step1", sub: "onboarding.step1Sub" },
+      { n: 2, key: "fluxo", title: "onboarding.step2", sub: "onboarding.step2Sub" },
+      { n: 3, act: "budget", title: "onboarding.step3", sub: "onboarding.step3Sub" },
+    ].map((x) => `<button class="guide-step" data-act="${x.act || "wing"}"${x.key ? ` data-key="${x.key}"` : ""}>
+        <i>${x.n}</i><b>${esc(tr(x.title))}</b><span>${esc(tr(x.sub))}</span>
+      </button>`).join("");
+    openDrawer(`
+      <span class="drw-eyebrow">${esc(tr("guide.eyebrow"))}</span>
+      <div class="drw-head">
+        <span class="drw-mark" style="--pc:#2f9e6b">?</span>
+        <div><h2>${esc(tr("guide.title"))}</h2><p>${esc(tr("guide.intro"))}</p></div>
+      </div>
+      <div class="drw-section"><h3>${esc(tr("guide.start"))}</h3><div class="guide-steps">${steps}</div></div>
+      <div class="drw-section"><h3>${esc(tr("guide.wings"))}</h3><div class="guide-wings">${wings}</div></div>
+      <div class="drw-note">${esc(tr("guide.tip"))}</div>
+      <div class="drw-actions"><button class="btn primary" data-act="settings">${esc(tr("settings.title"))}</button><button class="btn ghost" data-act="settings-close">${esc(tr("common.close"))}</button></div>
+    `);
+  }
+
+  function recommendedActions() {
+    const S = state.snap;
+    const u = monthUsage();
+    const errors = (S.errors || []).length;
+    const cache = Number(S.totals?.cacheHit || 0);
+    const free = S.quota?.codex?.available ? Number(S.quota.codex.week_free || 0) : null;
+    const list = [];
+
+    const globalState = u && state.budgets.global ? budgetStatus(u.cost, state.budgets.global) : null;
+    const providerStates = u ? Object.entries(state.budgets.providers)
+      .map(([key, limit]) => ({ label: provName(key), st: budgetStatus(u.byProvider[key] || 0, limit) }))
+      .filter((x) => x.st)
+      .sort((a, b) => b.st.pct - a.st.pct) : [];
+    const worstGlobal = globalState ? { label: tr("budget.total"), st: globalState } : null;
+    const worst = !worstGlobal ? providerStates[0]
+      : !providerStates[0] || worstGlobal.st.pct >= providerStates[0].st.pct ? worstGlobal : providerStates[0];
+
+    if (worst?.st.tone === "over") {
+      list.push({ pri: 130, act: "budget", label: tr("action.budgetOver", { pct: pct(worst.st.pct, 0) }), detail: tr("action.budgetOverSub", { v: money(Math.max(0, -worst.st.left)) }) });
+    } else if (worst?.st.tone === "warn") {
+      list.push({ pri: 120, act: "budget", label: tr("action.budgetNear", { pct: pct(worst.st.pct, 0) }), detail: tr("action.budgetNearSub", { v: money(Math.max(0, worst.st.left)) }) });
+    }
+    if (errors) list.push({ pri: 110, wing: "ajuda", label: tr("action.reviewErrors", { n: errors }), detail: tr("action.reviewErrorsSub") });
+    if (free != null && free < 35) list.push({ pri: 100, wing: "fluxo", label: tr("action.quotaLow", { pct: pct(free, 0) }), detail: tr("action.quotaLowSub") });
+    if (cache < 65) list.push({ pri: 60, wing: "fluxo", label: tr("action.cacheLow"), detail: tr("action.cacheLowSub", { pct: pct(cache) }) });
+    if (!state.budgets.global && !Object.keys(state.budgets.providers).length) {
+      list.push({ pri: 50, act: "budget", label: tr("action.budget"), detail: tr("action.budgetSub") });
+    }
+    if (S.qoder?.sessions?.length) list.push({ pri: 10, wing: "sessoes", label: tr("action.explore"), detail: tr("action.exploreSub", { n: int(S.qoder.sessions.length) }) });
+    return list.sort((a, b) => b.pri - a.pri).slice(0, 2).map(({ pri, ...rest }) => rest);
+  }
+
+  function budgetStrip() {
+    const u = monthUsage();
+    if (!u) return "";
+    const b = state.budgets;
+    const hasBudget = Boolean(b.global || Object.keys(b.providers).length);
+    if (!hasBudget) {
+      return `<button class="budget-strip empty" data-act="budget">
+        <span class="bs-ico">◎</span>
+        <span class="bs-main">
+          <span class="bs-top"><b>${esc(tr("cockpit.budgetTitle"))}</b><em>${esc(tr("budget.month"))}</em></span>
+          <span class="bs-sub">${esc(tr("cockpit.budgetEmpty"))}</span>
+        </span>
+        <em>${esc(tr("budget.configure"))}</em>
+      </button>`;
+    }
+    const st = b.global ? budgetStatus(u.cost, b.global) : null;
+    const tone = st?.tone || "ok";
+    const fill = st ? clamp(st.pct) : clamp((u.cost / Math.max(1, u.projected)) * 100);
+    return `<button class="budget-strip ${tone}" data-act="budget">
+      <span class="bs-ico">◎</span>
+      <span class="bs-main">
+        <span class="bs-top"><b>${esc(tr("cockpit.budgetTitle"))}</b><em>${st ? pct(st.pct, 0) : esc(money(u.cost))}</em></span>
+        <span class="bs-bar"><i style="width:${fill}%"></i>${st ? `<span class="bs-mark" style="left:${b.threshold}%"></span>` : ""}</span>
+        <span class="bs-sub">${st ? `${esc(money(u.cost))} / ${esc(money(b.global))} · ${esc(tr("budget.forecast", { v: money(u.projected) }))}` : esc(tr("budget.provider"))} · ${esc(tr("budget.dayOfMonth", { d: u.elapsed, n: u.daysInMonth }))}</span>
+      </span>
+      <em>${esc(tr("budget.edit"))}</em>
+    </button>`;
+  }
+
+  function budgetWingCard() {
+    const u = monthUsage();
+    if (!u) return "";
+    const b = state.budgets;
+    if (!b.global && !Object.keys(b.providers).length) {
+      return `<div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>${esc(tr("budget.title"))}</h3><p>${esc(tr("budget.sub"))}</p></div><span class="pill warn">${esc(tr("budget.noLimit"))}</span></div>
+        <div class="w-bud-empty"><b>${esc(tr("cockpit.budgetEmpty"))}</b><button class="btn primary" data-act="budget">${esc(tr("budget.configure"))}</button></div>
+      </div>`;
+    }
+    const st = b.global ? budgetStatus(u.cost, b.global) : null;
+    const tone = st?.tone || "ok";
+    const rows = Object.entries(b.providers).map(([key, limit]) => {
+      const ps = budgetStatus(u.byProvider[key] || 0, limit);
+      return `<div class="w-bud-row">
+        <span class="w-bud-name"><i style="background:${provColor(key)}"></i>${esc(provName(key))}</span>
+        <span class="w-bud-track ${ps.tone}"><i style="width:${clamp(ps.pct)}%"></i></span>
+        <span class="w-bud-val">${pct(ps.pct, 0)}</span>
+      </div>`;
+    }).join("");
+    return `<div class="w-card" style="margin-top:12px">
+      <div class="w-card-head"><div><h3>${esc(tr("budget.title"))}</h3><p>${esc(tr("budget.globalSub", { d: u.elapsed, n: u.daysInMonth }))}</p></div><span class="pill ${tone === "over" ? "warn" : tone === "warn" ? "warn" : ""}">${st ? pct(st.pct, 0) : esc(tr("budget.provider"))}</span></div>
+      <div class="w-bud">
+        <div class="w-bud-top"><b>${money(u.cost)}</b><span>${b.global ? `/ ${money(b.global)}` : esc(tr("budget.provider"))}</span><em>${esc(tr("budget.forecast", { v: money(u.projected) }))}</em></div>
+        ${st ? `<span class="bud-bar ${tone}"><i style="width:${clamp(st.pct)}%"></i><span class="bud-bar-mark" style="left:${b.threshold}%"></span></span>` : ""}
+        ${rows ? `<div class="w-bud-rows">${rows}</div>` : ""}
+      </div>
+      <div class="w-bud-actions"><button class="btn ghost" data-act="budget">${esc(tr("budget.edit"))}</button></div>
+    </div>`;
+  }
+
+  function healthCard() {
+    const slo = state.snap?.slo;
+    const rows = (slo?.providers || []).filter((p) => p.requests);
+    if (!rows.length) return "";
+    const overall = slo.overall || {};
+    const dot = (tone) => tone === "bad" ? "#c15546" : tone === "warn" ? "#e6a62d" : "#2f9e6b";
+    return `<div class="w-card" style="margin-top:12px">
+      <div class="w-card-head"><div><h3>${esc(tr("health.title"))}</h3><p>${esc(tr("health.sub"))}</p></div><span class="pill">${esc(tr(`health.${overall.tone || "ok"}`))}</span></div>
+      <div class="w-table">
+        <div class="w-row head" style="grid-template-columns:minmax(0,1fr) 64px 64px 64px 56px 66px">
+          <span>${esc(tr("health.provider"))}</span><span>${esc(tr("health.calls"))}</span><span>${esc(tr("health.p50"))}</span><span>${esc(tr("health.p95"))}</span><span>${esc(tr("health.errorRate"))}</span><span>${esc(tr("health.ttft"))}</span>
+        </div>
+        ${rows.map((p) => `<div class="w-row" style="grid-template-columns:minmax(0,1fr) 64px 64px 64px 56px 66px">
+          <span class="r-main"><b>${esc(provName(p.provider))}</b><span><i class="health-dot" style="background:${dot(p.tone)}"></i>${esc(tr(`health.${p.tone}`))}</span></span>
+          <span class="num">${int(p.requests)}</span>
+          <span class="num">${latency(p.p50)}</span>
+          <span class="num">${latency(p.p95)}</span>
+          <span class="num" style="color:${p.errorRate >= 5 ? "#b0603c" : p.errorRate > 0 ? "#a9771c" : "#287d59"}">${pct(p.errorRate, 0)}</span>
+          <span class="num">${latency(p.ttftP50)}</span>
+        </div>`).join("")}
+      </div>
+      <div class="w-health-foot">
+        <span>${esc(tr("health.method", { window: esc(tr("health.window7d")) }))}</span>
+        <span class="w-health-actions">
+          <button class="btn ghost" data-act="export-csv">${esc(tr("fluxo.exportCsv"))}</button>
+          <button class="btn ghost" data-act="open-url" data-url="${esc(`${location.origin}/metrics`)}">${esc(tr("health.metrics"))}</button>
+        </span>
+      </div>
+    </div>`;
+  }
+
+  function exportCsv() {
+    const S = state.snap;
+    if (!S) return;
+    const providers = (S.providers || []).map((p) => p.provider);
+    const head = ["date", "requests", "tokens", "input", "cached", "cost_brl",
+      ...providers.flatMap((p) => [`${p}_tokens`, `${p}_requests`, `${p}_cost_brl`])];
+    const lines = [head.join(",")];
+    (S.series || []).forEach((d) => {
+      lines.push([
+        d.date, d.requests, d.tokens, d.input, d.cached, Number(d.cost || 0).toFixed(4),
+        ...providers.flatMap((p) => [
+          d.providers?.[p]?.tokens || 0,
+          d.providers?.[p]?.requests || 0,
+          Number(d.providers?.[p]?.cost || 0).toFixed(4),
+        ]),
+      ].join(","));
+    });
+    lines.push("");
+    lines.push("provider,requests,tokens,cost_brl,p50_ms,p95_ms,ttft_p50_ms,error_rate_pct");
+    (S.providers || []).forEach((p) => {
+      const slo = (S.slo?.providers || []).find((x) => x.provider === p.provider) || {};
+      lines.push([p.provider, p.requests, p.tokens, Number(p.cost || 0).toFixed(4), slo.p50 || "", slo.p95 || "", slo.ttftP50 || "", slo.errorRate ?? ""].join(","));
+    });
+    const blob = new Blob([`\ufeff${lines.join("\n")}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rune-usage-${S.today?.date || new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    toast(tr("fluxo.csvSaved"));
+  }
+
+  async function loadSecurity() {
+    if (state.securityLoading) return;
+    state.securityLoading = true;
+    renderSecurityBox();
+    try {
+      const res = await fetch("/api/security", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      state.security = await res.json();
+    } catch (err) {
+      state.security = { error: err.message, findings: [], checks: [] };
+    } finally {
+      state.securityLoading = false;
+      renderSecurityBox();
+    }
+  }
+
+  function renderSecurityBox() {
+    const box = $("#secBox");
+    if (box) box.innerHTML = securityBody();
+  }
+
+  function securityBody() {
+    const sec = state.security;
+    if (!sec || state.securityLoading) {
+      return `<div class="w-card-head"><div><h3>${esc(tr("security.title"))}</h3><p>${esc(tr("security.sub"))}</p></div><span class="pill">${esc(tr("security.checking"))}</span></div>
+        <div class="sec-loading"><i></i><span>${esc(tr("security.loadingSub"))}</span></div>`;
+    }
+    if (sec.error) {
+      return `<div class="w-card-head"><div><h3>${esc(tr("security.title"))}</h3><p>${esc(tr("security.sub"))}</p></div><span class="pill warn">offline</span></div>
+        <div class="sec-empty">${esc(tr("security.error"))} · ${esc(sec.error)}</div>
+        <div class="drw-actions" style="margin-top:10px"><button class="btn ghost" data-act="sec-refresh">${esc(tr("security.rescan"))}</button></div>`;
+    }
+    const findings = sec.findings || [];
+    const checks = sec.checks || [];
+    const level = sec.level || "ok";
+    const passed = checks.filter((c) => c.ok).length;
+    const when = sec.checked_at ? new Date(sec.checked_at).toLocaleTimeString(state.lang, { hour: "2-digit", minute: "2-digit" }) : "—";
+    const secKey = (key, vars, fallback) => { const text = tr(key, vars); return text === key ? fallback : text; };
+    const findingTitle = (f) => f.code === "perm"
+      ? secKey("security.f.perm", { target: secKey(`security.target.${f.params?.target}`, null, f.params?.target || "") }, f.title)
+      : secKey(`security.f.${f.code}`, f.params, f.title);
+    const findingDetail = (f) => f.code === "perm"
+      ? secKey("security.f.permDetail", f.params, f.detail)
+      : secKey(`security.f.detail.${f.code}`, f.params, f.detail);
+    const checkLabel = (c) => secKey(`security.c.${c.key}`, null, c.label);
+    const checkDetail = (c) => {
+      if (c.key === "bind") return secKey("security.c.bindDetail", c.params, c.detail);
+      if (c.key === "perms") {
+        const modes = c.params?.modes;
+        if (modes) return Object.entries(modes).map(([target, mode]) => `${secKey(`security.target.${target}`, null, target)} ${mode}`).join(" · ");
+        return secKey("security.c.permsDetail", c.params, c.detail);
+      }
+      if (c.key === "secrets") return secKey(c.ok ? "security.c.secretsClean" : "security.c.secretsHits", c.params, c.detail);
+      if (c.key === "tunnel") return secKey(`security.c.tunnelDetail.${c.params?.state || "off"}`, null, c.detail);
+      return secKey(`security.c.detail.${c.key}`, null, c.detail);
+    };
+    return `<div class="w-card-head"><div><h3>${esc(tr("security.title"))}</h3><p>${esc(tr("security.sub"))}</p></div><span class="pill ${level === "ok" ? "ok" : level === "bad" ? "bad" : "warn"}">${esc(tr(`security.${level === "ok" ? "ok" : "findings"}`, { n: findings.length }))}</span></div>
+      <div class="sec-top">
+        <div class="sec-score ${level}"><b>${int(sec.score)}</b><span>/100</span><em>${esc(tr(`security.tone.${level}`))}</em></div>
+        <div class="sec-summary">
+          ${findings.length ? findings.map((f) => `<div class="sec-finding ${f.level}">
+            <span class="sec-ico">${f.level === "bad" ? "!" : f.level === "warn" ? "▲" : "i"}</span>
+            <div class="sec-main"><b>${esc(findingTitle(f))}</b><p>${esc(findingDetail(f))}</p></div>
+            ${f.fix ? `<button class="btn ghost sec-fix" data-act="sec-copy" data-fix="${esc(f.fix)}">${esc(tr("security.copyFix"))}</button>` : ""}
+          </div>`).join("") : `<div class="sec-empty ok">${esc(tr("security.ok"))}</div>`}
+        </div>
+      </div>
+      <div class="sec-checks-head"><span>${esc(tr("security.checks"))}</span><em>${passed}/${checks.length} · ${esc(tr("security.checked"))} ${esc(when)}</em></div>
+      <div class="sec-checks">
+        ${checks.map((c) => `<div class="sec-check ${c.ok ? "ok" : "warn"}" title="${esc(checkDetail(c))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="${c.ok ? "M5 13l4 4L19 7" : "M12 8v5m0 3.5v.5"}"/></svg><span>${esc(checkLabel(c))}</span><em>${esc(checkDetail(c))}</em></div>`).join("")}
+      </div>
+      <div class="sec-foot">
+        <span>${esc(tr("security.foot"))}</span>
+        <button class="btn ghost" data-act="sec-refresh">${esc(tr("security.rescan"))}</button>
+      </div>`;
+  }
+
+  function openBudgetDrawer() {
+    state.budgetOpen = true;
+    renderBudgetBody();
+    const d = $("#drawer");
+    d.hidden = false;
+    d.setAttribute("aria-hidden", "false");
+    void d.offsetWidth;
+    d.classList.add("open");
+  }
+
+  function renderBudgetBody() {
+    const u = monthUsage();
+    const b = state.budgets;
+    const spent = u?.cost || 0;
+    const st = b.global ? budgetStatus(spent, b.global) : null;
+    const globalValue = b.global ? toDisplay(b.global).toFixed(2) : "";
+    const keys = [...new Set([...(state.snap?.providers || []).map((p) => p.provider), ...Object.keys(b.providers)])];
+    const rows = keys
+      .sort((a, bKey) => (u?.byProvider[bKey] || 0) - (u?.byProvider[a] || 0))
+      .map((key) => {
+        const limit = b.providers[key];
+        const ps = limit ? budgetStatus(u?.byProvider[key] || 0, limit) : null;
+        return `<div class="bud-row">
+          <div class="bud-row-top">
+            <span class="bud-prov"><i style="background:${provColor(key)}"></i><b>${esc(provName(key))}</b><em>${money(u?.byProvider[key] || 0)}</em></span>
+            <label class="bud-input"><span>${CURRENCIES[state.currency] || ""}</span><input type="number" name="budget-${esc(key)}" step="1" min="0" placeholder="${esc(tr("budget.placeholder"))}" data-budget="p:${esc(key)}" value="${limit ? toDisplay(limit).toFixed(2) : ""}" aria-label="${esc(tr("budget.provider"))} ${esc(provName(key))}"></label>
+          </div>
+          ${limit ? `<span class="bud-track ${ps.tone}"><i style="width:${clamp(ps.pct)}%"></i><span class="bud-track-mark" style="left:${b.threshold}%"></span></span>
+          <span class="bud-row-sub">${esc(tr("budget.usedOf", { used: money(u?.byProvider[key] || 0), limit: money(limit), pct: pct(ps.pct, 0) }))}${ps.tone !== "ok" ? ` · ${esc(ps.tone === "over" ? tr("budget.over", { v: money(-ps.left) }) : tr("budget.remaining", { v: money(ps.left) }))}` : ""}</span>`
+            : `<span class="bud-row-sub">${esc(tr("budget.noLimit"))}</span>`}
+        </div>`;
+      }).join("");
+    const thresholdBtns = [60, 70, 80, 90].map((v) => `<button class="bud-th${v === b.threshold ? " on" : ""}" data-act="budget-threshold" data-v="${v}">${v}%</button>`).join("");
+    $("#drawerBody").innerHTML = `
+      <span class="drw-eyebrow">${esc(tr("budget.eyebrow"))}</span>
+      <div class="drw-head">
+        <span class="drw-mark" style="--pc:#f4bd4a">◎</span>
+        <div><h2>${esc(tr("budget.title"))}</h2><p>${esc(tr("budget.sub"))}</p></div>
+      </div>
+      <div class="bud-hero ${st?.tone || ""}">
+        <div class="bud-hero-top"><span>${esc(tr("budget.total"))}</span><b>${money(spent)}</b><em>${b.global ? esc(`/ ${money(b.global)}`) : esc(tr("budget.noLimit"))}</em></div>
+        ${b.global ? `<span class="bud-bar ${st.tone}"><i style="width:${clamp(st.pct)}%"></i><span class="bud-bar-mark" style="left:${b.threshold}%"></span></span>
+        <div class="bud-hero-foot"><span>${esc(tr("budget.usedOf", { used: money(spent), limit: money(b.global), pct: pct(st.pct, 0) }))}</span><span>${esc(tr("budget.forecast", { v: money(u.projected) }))}</span></div>` : ""}
+      </div>
+      <div class="drw-section"><h3>${esc(tr("budget.global"))}</h3>
+        <label class="bud-input wide"><span>${CURRENCIES[state.currency] || ""}</span><input type="number" name="budget-global" step="1" min="0" placeholder="${esc(tr("budget.placeholder"))}" data-budget="global" value="${globalValue}" aria-label="${esc(tr("budget.global"))}"><em>${esc(tr("budget.month"))}</em></label>
+        <div class="drw-note">${esc(tr("budget.globalSub", { d: u.elapsed, n: u.daysInMonth }))}</div>
+      </div>
+      <div class="drw-section"><h3>${esc(tr("budget.threshold"))}</h3><div class="bud-threshold">${thresholdBtns}</div><div class="drw-note">${esc(tr("budget.thresholdSub"))}</div></div>
+      <div class="drw-section"><h3>${esc(tr("budget.provider"))}</h3><div class="bud-rows">${rows}</div></div>
+      <div class="drw-actions">
+        <button class="btn primary" data-act="budget-save">${esc(tr("budget.save"))}</button>
+        <button class="btn ghost" data-act="budget-reset">${esc(tr("budget.reset"))}</button>
+      </div>
+    `;
+  }
+
+  function saveBudgets() {
+    const providers = {};
+    let global = null;
+    $$("#drawerBody [data-budget]").forEach((inp) => {
+      const value = Number(String(inp.value).replace(",", "."));
+      const base = value > 0 ? Math.round(fromDisplay(value) * 100) / 100 : null;
+      if (inp.dataset.budget === "global") global = base;
+      else if (base) providers[inp.dataset.budget.slice(2)] = base;
+    });
+    state.budgets = normalizeBudgets({ ...state.budgets, global, providers });
+    store.set("budgets", state.budgets);
+    renderBudgetBody();
+    if (state.snap) {
+      renderCockpit();
+      renderBand();
+    }
+    toast(tr("budget.saved"));
+  }
+
+  function openProviderDrawer(key) {
+    const S = state.snap;
+    const meta = provMeta(key);
+    const usage = (S.providers || []).find((p) => p.provider === key);
+    const conn = (S.connections || []).find((c) => c.provider === key);
+    const models = (S.models || []).filter((m) => m.provider === key).slice(0, 5);
+    const quota = key === "codex" ? S.quota?.codex : key === "claude" ? S.quota?.claude : key === "google" ? S.quota?.google : null;
+    const slo = (S.slo?.providers || []).find((x) => x.provider === key);
+    const kb = knowledgeFor(key);
+    const kpis = [
+      ["tokens", usage ? compact(usage.tokens) : "0"],
+      ["chamadas", usage ? int(usage.requests) : "0"],
+      ["custo", usage ? money(usage.cost) : "—"],
+      ["share", usage ? pct(usage.share) : "—"],
+    ];
+    openDrawer(`
+      <span class="drw-eyebrow">${esc(meta.vendor || "provedor")} · manual local</span>
+      <div class="drw-head">
+        <span class="drw-mark" style="--pc:${meta.color}">${esc(meta.glyph)}</span>
+        <div><h2>${esc(meta.name)}</h2><p>${esc(kb?.tag || "provedor conectado")} · ${conn ? (conn.status === "active" ? "conexão ativa" : `conexão com erro${conn.errorCode ? ` ${conn.errorCode}` : ""}`) : "sem conexão"}</p></div>
+      </div>
+      <div class="drw-kpis">${kpis.map(([k, v]) => `<div class="drw-kpi"><span>${k}</span><b>${v}</b></div>`).join("")}</div>
+      ${kb ? `<div class="drw-section"><h3>Para que serve</h3><div class="drw-note" style="margin-top:0">${esc(kb.purpose)}</div></div>
+      <div class="drw-section"><h3>Melhor para</h3>${kb.best.map((x) => `<div class="drw-line manual"><span>✓</span><b>${esc(x)}</b></div>`).join("")}</div>
+      <div class="drw-section"><h3>Evite quando</h3>${kb.avoid.map((x) => `<div class="drw-line manual bad"><span>×</span><b>${esc(x)}</b></div>`).join("")}</div>
+      <div class="drw-section"><h3>Como administrar o consumo</h3>${kb.manage.map((x) => `<div class="drw-line manual"><span>•</span><b>${esc(x)}</b></div>`).join("")}</div>` : ""}
+      ${quota && quota.available ? `<div class="drw-section"><h3>Cota agora</h3>
+        ${quota.week_free != null ? `<div class="drw-line"><span>folga semanal</span><b>${pct(quota.week_free)}</b></div>` : ""}
+        ${quota.session_free != null ? `<div class="drw-line"><span>folga da sessão</span><b>${pct(quota.session_free)}</b></div>` : ""}
+        ${quota.week_reset ? `<div class="drw-line"><span>reset semanal</span><b>${esc(until(quota.week_reset))}</b></div>` : ""}
+        ${quota.credit_free != null ? `<div class="drw-line"><span>crédito livre</span><b>${pct(quota.credit_free)}</b></div>` : ""}
+        ${quota.pace != null ? `<div class="drw-line"><span>ritmo / meta</span><b>${pct(quota.pace)} / ${pct(quota.target)} ao dia</b></div>` : ""}
+      </div>` : ""}
+      ${slo ? `<div class="drw-section"><h3>${esc(tr("health.title"))}</h3>
+        <div class="drw-line"><span>${esc(tr("health.calls"))}</span><b>${int(slo.requests)} · ${pct(slo.errorRate, 0)} ${esc(tr("health.errorRate"))}</b></div>
+        <div class="drw-line"><span>p50</span><b>${latency(slo.p50)}</b></div>
+        <div class="drw-line"><span>p95</span><b>${latency(slo.p95)}</b></div>
+        <div class="drw-line"><span>${esc(tr("health.ttft"))}</span><b>${latency(slo.ttftP50)}</b></div>
+        <div class="drw-line"><span>${esc(tr("health.metrics"))}</span><button class="btn ghost" style="padding:3px 8px" data-act="open-url" data-url="${esc(`${location.origin}/metrics`)}">/metrics</button></div>
+      </div>` : ""}
+      ${models.length ? `<div class="drw-section"><h3>Modelos no período</h3>${models.map((m) => `<div class="drw-line"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(modelName(m.model))}</span><b>${compact(m.tokens)} · ${money(m.cost)}</b></div>`).join("")}</div>` : ""}
+      ${kb ? `<div class="drw-section"><h3>Documentação oficial</h3><div class="drw-actions" style="margin-top:6px;flex-direction:column">${kb.docs.map(([label, url]) => `<button class="btn ghost" data-act="open-url" data-url="${esc(url)}" style="justify-content:flex-start">${esc(label)} ↗</button>`).join("")}</div></div>` : ""}
+      <div class="drw-note">${esc(kb?.verdict || "Provedor conectado ao 9router.")}<br><br>Nenhuma chave ou token é exibido. A leitura é somente local.</div>
+      <div class="drw-actions">
+        <button class="btn ghost" data-act="focus-only" data-key="${esc(key)}">Filtrar no gráfico</button>
+        <button class="btn primary" data-act="ask" data-q="${esc(`Qual a melhor forma de usar ${meta.name} e controlar o consumo?`)}">Perguntar ao Oráculo</button>
+      </div>
+    `);
+  }
+
+  function openQuotaDrawer(key) {
+    const S = state.snap;
+    const q = S.quota || {};
+    let title = "Cota", provider = key.split("-")[0], lines = [], note = "";
+    if (key.startsWith("codex") && q.codex?.available) {
+      const c = q.codex;
+      title = key.includes("session") ? "Codex · janela de 5h" : "Codex · semana";
+      lines = [
+        ["plano", c.plan || "—"],
+        ["folga semanal", pct(c.week_free)],
+        ["reset semanal", `${until(c.week_reset)} (${esc(c.week_reset)})`],
+        ["folga da sessão", pct(c.session_free)],
+        ["reset da sessão", until(c.session_reset)],
+        ["ritmo atual", pct(c.pace) + " ao dia"],
+        ["meta", pct(c.target) + " ao dia"],
+        ["reset credits", `${c.reset_credits ?? 0} disponíveis`],
+        ["créditos extras", c.credits?.has_credits ? money(c.credits.balance) : "sem saldo"],
+      ];
+      note = "O ritmo compara o consumo diário com a meta que preserva a folga até o reset. Se o ritmo passar da meta, o sol fica laranja no fim da janela.";
+    } else if (key.startsWith("claude") && q.claude?.available) {
+      const c = q.claude;
+      title = "Claude · cota";
+      lines = [
+        ["folga semanal", pct(c.week_free)],
+        ["reset semanal", until(c.week_reset)],
+        ["folga da sessão", pct(c.session_free)],
+        ["reset da sessão", until(c.session_reset)],
+        ["crédito total", c.credit_limit != null ? money(c.credit_limit) : "—"],
+        ["crédito usado", c.credit_used != null ? money(c.credit_used) : "—"],
+        ["crédito livre", c.credit_free != null ? pct(c.credit_free) : "—"],
+        ["reset do crédito", until(c.credit_reset)],
+      ];
+      note = "Esta conexão exige créditos para modelos premium. O erro 429 não é falta de janela: é falta de saldo para o modelo escolhido.";
+    } else if (key === "google") {
+      provider = "google";
+      title = "Google · cota";
+      lines = [["status", "sem cota por token"]];
+      note = q.google?.error || "O Google/Antigravity não expõe cota por token; acompanhe no painel do provedor.";
+    } else {
+      note = "Cota não disponível para este provedor.";
+    }
+    const kb = knowledgeFor(provider);
+    openDrawer(`
+      <span class="drw-eyebrow">${esc(provMeta(provider).vendor)} · cota local</span>
+      <div class="drw-head"><span class="drw-mark" style="--pc:${provColor(provider)}">${esc(provMeta(provider).glyph)}</span><div><h2>${esc(title)}</h2><p>leitura do 9router · ${ago(S.meta.router_age)}</p></div></div>
+      <div class="drw-section" style="margin-top:4px">${lines.map(([k, v]) => `<div class="drw-line"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("")}</div>
+      <div class="drw-note">${esc(note)}</div>
+      ${kb ? `<div class="drw-section"><h3>Como manter a folga</h3>${kb.manage.slice(0, 4).map((x) => `<div class="drw-line manual"><span>•</span><b>${esc(x)}</b></div>`).join("")}</div>
+      <div class="drw-section"><h3>Documentação</h3><div class="drw-actions" style="flex-direction:column;margin-top:6px">${kb.docs.map(([label, url]) => `<button class="btn ghost" data-act="open-url" data-url="${esc(url)}" style="justify-content:flex-start">${esc(label)} ↗</button>`).join("")}</div></div>` : ""}
+      <div class="drw-actions"><button class="btn primary" data-act="ask" data-q="${esc(`Como administrar a cota do ${provName(provider)} sem perder qualidade?`)}">Perguntar ao Oráculo</button></div>
+    `);
+  }
+
+  function openBucketDrawer(i) {
+    const item = state.chartItems[i];
+    if (!item) return;
+    const entries = Object.entries(item.providers || {}).filter(([, v]) => (v?.tokens || 0) > 0).sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0));
+    openDrawer(`
+      <span class="drw-eyebrow">${state.bucketKind === "hours" ? "hora" : "dia"} · detalhe local</span>
+      <div class="drw-head"><span class="drw-mark" style="--pc:#2f9e6b">◷</span><div><h2>${esc(item.title)}</h2><p>${int(item.requests)} chamadas · ${money(item.cost)}</p></div></div>
+      <div class="drw-kpis">
+        <div class="drw-kpi"><span>tokens</span><b>${compact(item.tokens)}</b></div>
+        <div class="drw-kpi"><span>chamadas</span><b>${int(item.requests)}</b></div>
+        <div class="drw-kpi"><span>custo</span><b>${money(item.cost)}</b></div>
+        <div class="drw-kpi"><span>provedores</span><b>${entries.length}</b></div>
+      </div>
+      <div class="drw-section"><h3>Distribuição</h3>
+        ${entries.map(([k, v]) => `<div class="drw-line"><span>${esc(provName(k))}</span><b>${compact(v.tokens)} · ${money(v.cost)}</b></div>`).join("") || `<div class="drw-line"><span>sem consumo</span><b>—</b></div>`}
+      </div>
+      <div class="drw-note">Quer investigar quais chamadas puxaram este bloco? Abra Sessões e ordene por tokens.</div>
+      <div class="drw-actions"><button class="btn primary" data-act="wing" data-key="sessoes">Abrir sessões</button><button class="btn ghost" data-act="close" data-close="1">Fechar</button></div>
+    `);
+  }
+
+  act("close", closeDrawer);
+
+  function openErrorDrawer(i) {
+    const e = state.snapshotError(i);
+    if (!e) return;
+    markReviewed(i);
+    openDrawer(`
+      <span class="drw-eyebrow">diagnóstico local · sem segredos</span>
+      <div class="drw-head"><span class="drw-mark" style="--pc:${e.diagnosis?.tone === "bad" ? "#d8584a" : "#e3a33f"}">!</span><div><h2>${esc(e.diagnosis?.title || "Erro")}</h2><p>${esc(provName(e.provider))} · ${esc(e.model || "—")} · ${e.count} ocorrência${e.count > 1 ? "s" : ""}</p></div></div>
+      <div class="drw-section"><h3>Causa provável</h3><div class="drw-note" style="margin-top:0">${esc(e.diagnosis?.cause || "—")}</div></div>
+      <div class="drw-section"><h3>Correção sugerida</h3><div class="drw-note" style="margin-top:0">${esc(e.diagnosis?.fix || "—")}</div></div>
+      <div class="drw-section"><h3>Mensagem normalizada</h3><div class="drw-note" style="margin-top:0;font-family:JetBrains Mono,monospace;font-size:8px;line-height:1.6">${esc(e.message)}</div></div>
+      <div class="drw-section"><h3>Prompt pronto</h3><div class="drw-note" style="margin-top:0;white-space:pre-wrap;max-height:180px;overflow:auto;font-size:8px;line-height:1.6">${esc(e.prompt)}</div></div>
+      <div class="drw-actions"><button class="btn primary" data-act="error-copy" data-i="${i}">Copiar prompt</button><button class="btn ghost" data-act="open-url" data-url="${esc(state.snap.router.links?.find((l) => l.label === "Abrir 9router")?.url || "")}">Abrir 9router</button></div>
+      <div class="drw-note">Última ocorrência: ${esc(e.last)}. A cópia não inclui chaves, tokens ou trechos de código.</div>
+    `);
+  }
+
+  function openSessionDrawer(id) {
+    const s = state.snap.qoder?.sessions?.find((x) => x.id === id);
+    if (!s) return;
+    const ctx = (s.context || []).map((c) => `<div class="drw-line"><span>${esc(c.name)}</span><b>${pct(c.pct)}</b></div>`).join("");
+    openDrawer(`
+      <span class="drw-eyebrow">Qoder Desktop · metadados</span>
+      <div class="drw-head"><span class="drw-mark" style="--pc:#3a7fc0">Q</span><div><h2>${esc(s.title)}</h2><p>${esc(s.project)} · ${esc(s.model)} · ${esc(s.mode)}</p></div></div>
+      <div class="drw-kpis">
+        <div class="drw-kpi"><span>mensagens</span><b>${int(s.messages)}</b></div>
+        <div class="drw-kpi"><span>tool calls</span><b>${int(s.tool_calls)}</b></div>
+        <div class="drw-kpi"><span>contexto</span><b>${pct(s.context_pct)}</b></div>
+        <div class="drw-kpi"><span>leituras dup.</span><b>${int(s.duplicates)}</b></div>
+      </div>
+      <div class="drw-section"><h3>Composição do contexto</h3>${ctx || `<div class="drw-line"><span>sem snapshot</span><b>—</b></div>`}</div>
+      <div class="drw-section"><h3>Local</h3><div class="drw-line"><span>projeto</span><b>${esc(s.cwd || "—")}</b></div><div class="drw-line"><span>atualizada</span><b>${esc(rel(s.updated_at))}</b></div></div>
+      <div class="drw-actions"><button class="btn primary" data-act="ask" data-q="${esc(`Analise a sessão ${s.title} (${s.project}) com contexto em ${pct(s.context_pct)} e sugira como reduzir.`)}">Analisar no Oráculo</button></div>
+      <div class="drw-note">Apenas metadados: nenhum prompt ou trecho de código é lido para esta tela.</div>
+    `);
+  }
+
+  function openProjectDrawer(key) {
+    const p = (state.snap.projects || []).find((x) => x.name === key);
+    if (!p) return;
+    const sessions = (state.snap.qoder?.sessions || []).filter((s) => s.project === p.name);
+    openDrawer(`
+      <span class="drw-eyebrow">projeto local</span>
+      <div class="drw-head"><span class="drw-mark" style="--pc:#8b7ad4">${esc(p.name.slice(0, 1).toUpperCase())}</span><div><h2>${esc(p.name)}</h2><p>${esc(p.kind)} · ${esc(p.origin)}</p></div></div>
+      <div class="drw-kpis">
+        <div class="drw-kpi"><span>sessões</span><b>${int(p.sessions)}</b></div>
+        <div class="drw-kpi"><span>IAs</span><b>${(p.ais || []).length}</b></div>
+        <div class="drw-kpi"><span>atividade</span><b style="font-size:12px">${esc(p.last_activity || "—")}</b></div>
+        <div class="drw-kpi"><span>abertas</span><b>${sessions.length}</b></div>
+      </div>
+      <div class="drw-section"><h3>Ferramentas</h3><div class="drw-line"><span>AIs</span><b>${esc((p.ais || []).join(", ") || "—")}</b></div><div class="drw-line"><span>caminho</span><b style="max-width:230px;overflow:hidden;text-overflow:ellipsis">${esc(p.path || "—")}</b></div></div>
+      ${sessions.length ? `<div class="drw-section"><h3>Sessões recentes</h3>${sessions.slice(0, 5).map((s) => `<button class="drw-line" style="width:100%;text-align:left" data-act="session" data-id="${esc(s.id)}"><span>${esc(s.title)}</span><b>${pct(s.context_pct)}</b></button>`).join("")}</div>` : ""}
+      <div class="drw-actions"><button class="btn primary" data-act="ask" data-q="${esc(`Como reduzir o custo e o contexto do projeto ${p.name}?`)}">Pedir plano</button></div>
+    `);
+  }
+
+  function openRadar(i) {
+    const a = allAlerts()[i];
+    if (!a) return;
+    if (a.budget) {
+      openBudgetDrawer();
+      return;
+    }
+    if (a.provider && state.snap.errors?.some((e) => e.provider === a.provider)) {
+      openWing("ajuda");
+      return;
+    }
+    openWing("fluxo");
+  }
+
+  function stateSnapshotError(i) {
+    return state.snap?.errors?.[i];
+  }
+  state.snapshotError = stateSnapshotError;
+
+  function markReviewed(i) {
+    const e = state.snap?.errors?.[i];
+    if (!e) return;
+    const key = `${e.provider}|${e.model}|${e.diagnosis?.title}`;
+    if (state.reviewed.has(key)) return;
+    state.reviewed.add(key);
+    store.set("reviewed", [...state.reviewed]);
+    renderQuests();
+    renderXP();
+  }
+
+  function copyErrorPrompt(i) {
+    const e = state.snap?.errors?.[i];
+    if (!e) return;
+    markReviewed(i);
+    copyText(e.prompt, "Prompt de correção copiado");
+  }
+
+  /* ---------------------------------------------------------- palette */
+
+  function paletteEntries() {
+    const S = state.snap;
+    const entries = [];
+    const wicons = {};
+    WING_ORDER.forEach((k) => { wicons[k] = railIcon(k); });
+    entries.push({ kind: "ala", title: "Atlas", sub: "visão geral", icon: railIcon("atlas"), run: () => { closeWing(); } });
+    WING_ORDER.forEach((k) => entries.push({ kind: "ala", title: tr(`nav.${k}`), sub: tr(`wings.${k}.sub`), icon: wicons[k], run: () => openWing(k) }));
+    entries.push({ kind: "ação", title: tr("budget.title"), sub: tr("budget.sub"), icon: "", run: openBudgetDrawer });
+    entries.push({ kind: "ação", title: tr("settings.title"), sub: tr("settings.currencySub"), icon: "", run: openSettingsDrawer });
+    entries.push({ kind: "ação", title: "Atualizar dados agora", sub: "roda o coletor local", icon: "", run: refreshData });
+    entries.push({ kind: "ação", title: "Alternar dia / crepúsculo", sub: "muda a iluminação", icon: "", run: toggleLight });
+    entries.push({ kind: "ação", title: "Fazer o tour guiado", sub: "6 paradas", icon: "", run: startTour });
+    entries.push({ kind: "ação", title: "Copiar diagnóstico completo", sub: "prompt pronto para sua IA", icon: "", run: () => copyText(buildDiagnosticPrompt(), "Diagnóstico copiado") });
+    entries.push({ kind: "ação", title: "Exportar snapshot JSON", sub: "somente dados derivados", icon: "", run: exportJson });
+    entries.push({ kind: "ação", title: tr("fluxo.exportCsv"), sub: tr("health.title"), icon: "", run: exportCsv });
+    if (S) {
+      (S.providers || []).forEach((p) => entries.push({ kind: "provedor", title: provName(p.provider), sub: `${compact(p.tokens)} tokens · ${pct(p.share)} · manual`, color: provColor(p.provider), run: () => openProviderDrawer(p.provider) }));
+      (S.models || []).slice(0, 12).forEach((m) => entries.push({ kind: "modelo", title: modelName(m.model), sub: `${provName(m.provider)} · ${compact(m.tokens)} tokens`, color: provColor(m.provider), run: () => { state.focus = m.provider; renderFleet(); renderChart(); openProviderDrawer(m.provider); } }));
+      (S.projects || []).slice(0, 10).forEach((p) => entries.push({ kind: "projeto", title: p.name, sub: `${p.sessions} sessões · ${p.last_activity || ""}`, run: () => openProjectDrawer(p.name) }));
+      (S.qoder?.sessions || []).slice(0, 10).forEach((s) => entries.push({ kind: "sessão", title: s.title, sub: `${s.project} · ${pct(s.context_pct)} de contexto`, run: () => openSessionDrawer(s.id) }));
+      (S.errors || []).slice(0, 8).forEach((e, i) => entries.push({ kind: "erro", title: e.diagnosis?.title || "Erro", sub: `${provName(e.provider)} · ${e.model}`, run: () => { markReviewed(i); openErrorDrawer(i); } }));
+    }
+    return entries;
+  }
+
+  function openPalette() {
+    if (!state.snap) return;
+    closeDrawer();
+    $("#palette").hidden = false;
+    void $("#palette").offsetWidth;
+    $("#palette").classList.add("open");
+    const input = $("#paletteInput");
+    input.value = "";
+    state.paletteIndex = 0;
+    renderPalette("");
+    setTimeout(() => input.focus(), 60);
+  }
+
+  function closePalette() {
+    const p = $("#palette");
+    if (p.hidden) return;
+    p.classList.remove("open");
+    setTimeout(() => { if (!p.classList.contains("open")) p.hidden = true; }, 260);
+  }
+
+  function renderPalette(query) {
+    const all = paletteEntries();
+    const q = nkey(query).trim();
+    const filtered = (q ? all.filter((e) => nkey(`${e.title} ${e.sub} ${e.kind}`).includes(q)) : all).slice(0, 14);
+    state.palette = filtered;
+    state.paletteIndex = Math.min(state.paletteIndex, Math.max(0, filtered.length - 1));
+    const wrap = $("#paletteResults");
+    if (!filtered.length) {
+      wrap.innerHTML = `<div class="palette-empty">Nada encontrado para “${esc(query)}”.</div>`;
+      return;
+    }
+    wrap.innerHTML = filtered.map((e, i) => `<button class="pal-item${i === state.paletteIndex ? " sel" : ""}" data-act="palette-run" data-i="${i}" data-kind="${esc(e.kind)}" style="${e.color ? `--pc:${e.color}` : ""}">
+      <span class="pal-ico">${e.icon || (e.color ? e.title.slice(0, 1).toUpperCase() : "→")}</span>
+      <span class="pal-main"><b>${esc(e.title)}</b><span>${esc(e.sub)}</span></span>
+      <span class="pal-kind">${esc(e.kind)}</span>
+    </button>`).join("");
+    $$(".pal-item", wrap).forEach((el, i) => el.classList.toggle("sel", i === state.paletteIndex));
+    const sel = $(".pal-item.sel", wrap);
+    if (sel) sel.scrollIntoView({ block: "nearest" });
+  }
+
+  function paletteKeys(ev) {
+    if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      if (!state.palette.length) return;
+      state.paletteIndex = (state.paletteIndex + 1) % state.palette.length;
+      renderPalette($("#paletteInput").value);
+    } else if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (!state.palette.length) return;
+      state.paletteIndex = (state.paletteIndex - 1 + state.palette.length) % state.palette.length;
+      renderPalette($("#paletteInput").value);
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      const entry = state.palette[state.paletteIndex];
+      if (entry) { closePalette(); setTimeout(entry.run, 60); }
+    }
+  }
+
+  /* ---------------------------------------------------------- tour */
+
+  const TOUR = [
+    { target: "#sunGauge", title: "O sol é a sua cota", text: "O anel mostra a folga real da janela do Codex. Clique para alternar entre semana, janela de 5h e Claude. Duplo clique abre o detalhamento." },
+    { target: "#fleet", title: "Cada balão é um provedor", text: "O número é a fatia de tokens no período. Clique em um balão para filtrar o gráfico e abrir o manual daquela IA, com documentação oficial." },
+    { target: ".chart-wrap", title: "O gráfico é hora a hora", text: "Passe o mouse para ver provedor e custo. Clique numa barra para abrir a hora. A linha do tempo abaixo viaja entre os dias monitorados." },
+    { target: ".cockpit", title: "O cockpit decide por você", text: "Agora, provedores, erros diagnosticados com prompt pronto e dicas geradas dos seus números. Tudo baseado no snapshot local." },
+    { target: ".rail", title: "Dez alas, um só lugar", text: "Atlas, Fluxo, Sessões, Oficina, Oráculo, Biblioteca, Diário, Guilda, Perfil e Ajuda. Use 1–9 no teclado." },
+    { target: "#pipCompanion", title: "Pip lê a sua operação", text: "O assistente é local e rule-based: ele responde com os seus dados sem enviar nada para fora. Clique nele para abrir o Oráculo." },
+  ];
+
+  function initTour() { /* start handled after first snapshot */ }
+
+  function startTour() {
+    state.tourStep = 0;
+    $("#tour").hidden = false;
+    renderTour();
+  }
+
+  function renderTour() {
+    const step = TOUR[state.tourStep];
+    if (!step) { endTour(true); return; }
+    $("#tourStep").textContent = `TOUR · ${state.tourStep + 1}/${TOUR.length}`;
+    $("#tourTitle").textContent = step.title;
+    $("#tourText").textContent = step.text;
+    $("#tourNext").textContent = state.tourStep === TOUR.length - 1 ? "Concluir" : "Próximo";
+    $$(".tour-focus").forEach((el) => el.classList.remove("tour-focus"));
+    const target = $(step.target);
+    if (target) target.classList.add("tour-focus");
+  }
+
+  function advanceTour() {
+    if (state.tourStep >= TOUR.length - 1) { endTour(true); return; }
+    state.tourStep += 1;
+    renderTour();
+  }
+
+  function endTour(seen) {
+    $("#tour").hidden = true;
+    $$(".tour-focus").forEach((el) => el.classList.remove("tour-focus"));
+    if (seen) store.set("tourSeen", true);
+  }
+
+  /* ---------------------------------------------------------- prompts + export */
+
+  function buildContextPrompt() {
+    const S = state.snap;
+    if (!S) return "";
+    const lines = [
+      "Contexto Rune (local, sem segredos):",
+      `- Hoje: ${int(S.today.tokens)} tokens, ${S.today.requests} chamadas, ${money(S.today.cost)}, cache ${pct(S.totals.cacheHit)}.`,
+      `- Período: ${int(S.totals.requests)} chamadas, ${compact(S.totals.tokens)} tokens, ${money(S.totals.cost)}.`,
+      `- Provedores: ${(S.providers || []).map((p) => `${provName(p.provider)} ${pct(p.share)} / ${compact(p.tokens)} tokens`).join("; ")}.`,
+      S.quota?.codex?.available ? `- Codex: folga semanal ${pct(S.quota.codex.week_free)} e de sessão ${pct(S.quota.codex.session_free)}; ritmo ${pct(S.quota.codex.pace)} vs meta ${pct(S.quota.codex.target)}.` : "",
+      S.errors?.length ? `- Erros abertos: ${S.errors.map((e) => `${provName(e.provider)}/${e.model}: ${e.diagnosis?.title}`).slice(0, 8).join("; ")}.` : "- Sem erros abertos no período.",
+      `- Qoder: ${S.qoder?.sessions?.length || 0} sessões, ${S.qoder?.skills?.total || 0} skills, ${S.qoder?.duplicates?.length || 0} arquivos com leitura repetida.`,
+      `- Desperdício estimado em leituras repetidas: ${compact((S.qoder?.duplicates || []).reduce((a, b) => a + (b.wasted || 0), 0))} tokens.`,
+    ].filter(Boolean);
+    lines.push("", "Ajude-me a decidir as 3 melhores ações para reduzir custo e risco sem perder qualidade. Não peça nem exponha chaves ou tokens.");
+    return lines.join("\n");
+  }
+
+  function buildDiagnosticPrompt() {
+    const S = state.snap;
+    if (!S) return "";
+    const errors = (S.errors || []).slice(0, 6).map((e, i) => `${i + 1}. [${provName(e.provider)}/${e.model}] ${e.diagnosis?.title}: ${e.message} | causa: ${e.diagnosis?.cause} | correção: ${e.diagnosis?.fix}`).join("\n");
+    return [
+      "Diagnóstico Rune (local, sem segredos)",
+      `Gerado em ${S.meta.now_label}.`,
+      "",
+      "Métricas:",
+      `- Hoje: ${int(S.today.tokens)} tokens / ${S.today.requests} chamadas / ${money(S.today.cost)} / cache ${pct(S.totals.cacheHit)}.`,
+      `- Período: ${compact(S.totals.tokens)} tokens / ${int(S.totals.requests)} chamadas / ${money(S.totals.cost)}.`,
+      `- Provedores: ${(S.providers || []).map((p) => `${provName(p.provider)} ${pct(p.share)}`).join(", ")}.`,
+      "",
+      "Cotas:",
+      S.quota?.codex?.available ? `- Codex semana: ${pct(S.quota.codex.week_free)} livre, reset em ${until(S.quota.codex.week_reset)}.` : "- Codex sem cota exposta.",
+      S.quota?.claude?.available ? `- Claude semana: ${pct(S.quota.claude.week_free)} livre; crédito ${pct(S.quota.claude.credit_free || 0)}.` : "- Claude sem cota exposta.",
+      "",
+      "Erros:",
+      errors || "- Nenhum.",
+      "",
+      "Peça: (1) causa raiz, (2) correção segura no 9router, (3) fallback e retry, (4) o que monitorar. Não peça chaves nem tokens."
+    ].join("\n");
+  }
+
+  function buildReport() {
+    const S = state.snap;
+    if (!S) return "";
+    const rows = (S.series || []).slice(-7).map((d) => `| ${d.label} | ${int(d.requests)} | ${compact(d.tokens)} | ${money(d.cost)} |`).join("\n");
+    return [
+      "# Rune · relatório local",
+      "",
+      `Gerado em ${S.meta.now_label}. Nenhum prompt ou chave incluído.`,
+      "",
+      "## Hoje",
+      `- ${int(S.today.tokens)} tokens em ${int(S.today.requests)} chamadas`,
+      `- Custo ${money(S.today.cost)} · cache ${pct(S.totals.cacheHit)}`,
+      "",
+      "## Provedores",
+      ...(S.providers || []).map((p) => `- ${provName(p.provider)}: ${pct(p.share)} · ${compact(p.tokens)} tokens · ${money(p.cost)}`),
+      "",
+      "## Últimos dias",
+      "| dia | chamadas | tokens | custo |",
+      "| --- | ---: | ---: | ---: |",
+      rows,
+      "",
+      "## Cotas",
+      S.quota?.codex?.available ? `- Codex: ${pct(S.quota.codex.week_free)} de folga semanal, ${pct(S.quota.codex.session_free)} na sessão.` : "- Codex: sem cota exposta.",
+      S.quota?.claude?.available ? `- Claude: ${pct(S.quota.claude.week_free)} de folga semanal, crédito ${pct(S.quota.claude.credit_free || 0)}.` : "- Claude: sem cota exposta.",
+      "",
+      "## Erros diagnosticados",
+      ...(S.errors || []).slice(0, 5).map((e) => `- ${provName(e.provider)}/${e.model}: ${e.diagnosis?.title} — ${e.diagnosis?.fix}`),
+      "",
+      "---",
+      "Rune · local-first · 127.0.0.1",
+    ].join("\n");
+  }
+
+  function exportJson() {
+    const S = state.snap;
+    if (!S) return;
+    const safe = {
+      meta: S.meta,
+      totals: S.totals,
+      series: S.series,
+      providers: S.providers,
+      models: S.models,
+      quota: S.quota,
+      errors: (S.errors || []).map((e) => ({ provider: e.provider, model: e.model, message: e.message, count: e.count, last: e.last, code: e.code, diagnosis: e.diagnosis })),
+      qoder: S.qoder,
+      inventory: S.inventory,
+      projects: S.projects,
+      router: S.router,
+    };
+    const blob = new Blob([JSON.stringify(safe, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `rune-snapshot-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast("Snapshot exportado · somente metadados derivados");
+  }
+
+  /* ============================================================
+     AS DEZ ALAS
+     ============================================================ */
+
+  const WING_RENDERERS = {};
+
+  /* ---------------------------------------------------------- dados derivados */
+
+  const usageFor = (key) => (state.snap?.providers || []).find((p) => p.provider === key) || null;
+  const connFor = (key) => (state.snap?.connections || []).find((c) => c.provider === key) || null;
+  const sumDup = () => (state.snap?.qoder?.duplicates || []).reduce((a, b) => a + (b.wasted || 0), 0);
+  const shortPath = (v) => String(v || "").replace(/^\/Users\/[^/]+/, "~");
+
+  function connectedKeys() {
+    const S = state.snap;
+    const seen = new Set();
+    const out = [];
+    [...(S.providers || []).map((p) => p.provider), ...(S.connections || []).map((c) => c.provider)]
+      .forEach((k) => { if (k && !seen.has(k)) { seen.add(k); out.push(k); } });
+    return out;
+  }
+
+  function quotaFor(key) {
+    const q = state.snap?.quota || {};
+    if (key === "codex") return q.codex;
+    if (key === "claude") return q.claude;
+    if (key === "antigravity" || key === "gemini" || key === "gemini-cli") return q.google;
+    return null;
+  }
+
+  function quotaBadge(key) {
+    if (key === "nvidia") return { text: "custo zero", cls: "ok" };
+    if (key === "ollama") return { text: "local", cls: "ok" };
+    if (key === "openrouter") return { text: "créditos", cls: "info" };
+    const q = quotaFor(key);
+    if (q?.available && q.week_free != null) return { text: `${pct(q.week_free, 0)} livre`, cls: q.week_free > 40 ? "ok" : "warn" };
+    if (q?.available && q.credit_free != null) return { text: `${pct(q.credit_free, 0)} crédito`, cls: "warn" };
+    return { text: "sem cota API", cls: "warn" };
+  }
+
+  function providerStatus(key) {
+    const c = connFor(key);
+    if (!c) return { text: "não conectada", cls: "warn" };
+    if (c.status === "active") return { text: "ativa", cls: "ok" };
+    if (c.errorCode) return { text: `erro ${c.errorCode}`, cls: "bad" };
+    return { text: c.status || "off", cls: "warn" };
+  }
+
+  function donutSvg(rows) {
+    const total = Math.max(1, rows.reduce((a, b) => a + b.tokens, 0));
+    const C = 2 * Math.PI * 40;
+    let offset = 0;
+    const segs = rows.map((r) => {
+      const len = (r.tokens / total) * C;
+      const seg = `<circle cx="55" cy="55" r="40" fill="none" stroke="${provColor(r.key)}" stroke-width="13" stroke-dasharray="${Math.max(0.5, len).toFixed(2)} ${(C - Math.max(0.5, len)).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 55 55)"/>`;
+      offset += len;
+      return seg;
+    }).join("");
+    return `<svg viewBox="0 0 110 110" aria-hidden="true">
+      <circle cx="55" cy="55" r="40" fill="none" stroke="rgba(30,70,84,.06)" stroke-width="13"/>${segs}
+      <text x="55" y="53" text-anchor="middle" font-family="Outfit,sans-serif" font-size="15" font-weight="700" fill="#173c49">${compact(total)}</text>
+      <text x="55" y="64" text-anchor="middle" font-family="Inter,sans-serif" font-size="7" fill="#8aa0a9">tokens</text>
+    </svg>`;
+  }
+
+  function projectionSvg(days) {
+    const S = state.snap;
+    const avgCost = Number(S.totals.avgCost) || 0;
+    const todayCost = Number(S.today.cost) || 0;
+    const W = 700, H = 208, L = 46, R = 16, T = 14, B = 24, PW = W - L - R, PH = H - T - B;
+    const max = Math.max(0.01, avgCost * days, todayCost * days) * 1.08;
+    const pts = 13;
+    const x = (i) => L + (PW * i) / (pts - 1);
+    const y = (v) => T + PH - (v / max) * PH;
+    const avg = Array.from({ length: pts }, (_, i) => [x(i), y(avgCost * days * i / (pts - 1))]);
+    const tod = Array.from({ length: pts }, (_, i) => [x(i), y(todayCost * days * i / (pts - 1))]);
+    const path = (arr) => arr.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
+    const area = `${path(avg)} ${tod.slice().reverse().map((p) => `L${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ")} Z`;
+    let grid = "";
+    for (let i = 0; i <= 4; i++) {
+      const gy = T + (PH * i) / 4;
+      grid += `<line class="grid" x1="${L}" y1="${gy.toFixed(1)}" x2="${W - R}" y2="${gy.toFixed(1)}"/>`;
+      grid += `<text class="axis" x="${L - 6}" y="${(gy + 3).toFixed(1)}" text-anchor="end">${dec(toDisplay(max * (1 - i / 4)), 2)}</text>`;
+    }
+    const mid = Math.round((days / 2) * 10) / 10;
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+      ${grid}
+      <path d="${area}" fill="#e3a33f" opacity=".13"/>
+      <path class="line" d="${path(avg)}" stroke="#2f9e6b"/>
+      <path class="proj" d="${path(tod)}" stroke="#e3a33f"/>
+      <circle class="dot" cx="${x(pts - 1)}" cy="${y(avgCost * days)}" r="3.4" fill="#2f9e6b"/>
+      <circle class="dot" cx="${x(pts - 1)}" cy="${y(todayCost * days)}" r="3.4" fill="#e3a33f"/>
+      <text class="axis" x="${L}" y="${H - 6}" text-anchor="start">hoje</text>
+      <text class="axis" x="${L + PW / 2}" y="${H - 6}" text-anchor="middle">+${mid} dias</text>
+      <text class="axis" x="${W - R}" y="${H - 6}" text-anchor="end">+${days} dias</text>
+      <text class="axis" x="${W - R - 2}" y="${y(avgCost * days) - 7}" text-anchor="end" fill="#2f9e6b">média ${money(avgCost * days)}</text>
+      <text class="axis" x="${W - R - 2}" y="${y(todayCost * days) + 12}" text-anchor="end" fill="#b06f1e">ritmo de hoje ${money(todayCost * days)}</text>
+    </svg>`;
+  }
+
+  function heatmapHtml() {
+    const S = state.snap;
+    const rows = S.hours?.[S.today.date] || [];
+    const max = Math.max(1, ...rows.map((r) => r.tokens || 0));
+    return `<div class="heatmap">${Array.from({ length: 24 }, (_, h) => {
+      const row = rows.find((x) => x.hour === h) || { tokens: 0, requests: 0, cost: 0 };
+      const ratio = (row.tokens || 0) / max;
+      const color = `rgba(47,158,107,${(0.07 + ratio * 0.86).toFixed(2)})`;
+      const hot = ratio > 0.55;
+      return `<div class="heat-cell${hot ? " hot" : ""}" style="background:${color}" title="${String(h).padStart(2, "0")}:00 · ${compact(row.tokens)} tokens · ${int(row.requests)} chamadas · ${money(row.cost)}">${h % 3 === 0 ? String(h).padStart(2, "0") : ""}</div>`;
+    }).join("")}</div>
+    <div class="heat-legend"><span>menos</span><i style="--hc:#2f9e6b;--op:.12"></i><i style="--hc:#2f9e6b;--op:.3"></i><i style="--hc:#2f9e6b;--op:.55"></i><i style="--hc:#2f9e6b;--op:.85"></i><span>mais</span><span style="margin-left:auto">pico: ${compact(max)} tokens numa hora</span></div>`;
+  }
+
+  const MANUAL_TASKS = [
+    { key: "code", label: "Código no repositório", pick: "codex", alt: "antigravity", why: "Precisa ler arquivos, editar, rodar testes e iterar com ferramentas. O Codex é o agente mais maduro para esse ciclo; o Antigravity cobre o mesmo terreno quando o trabalho é multimodal ou exige planejamento visual.", watch: "Sessões longas inflam o input fixo. Reaproveite cache e desligue plugins/MCP que não usa." },
+    { key: "text", label: "Texto e análise crítica", pick: "claude", alt: "gemini", why: "Quando a resposta precisa de nuance, justificativa e contexto longo, o Claude tende a ser mais cuidadoso. O Gemini entra bem para contexto enorme e custo menor.", watch: "Modelos premium do Claude exigem créditos nesta conexão; confira o saldo antes de um bloco longo." },
+    { key: "image", label: "Imagem, PDF e vídeo", pick: "gemini", alt: "antigravity", why: "Gemini é multimodal por padrão e lida bem com documentos, imagens e mídia. O Antigravity usa a mesma família em um fluxo agêntico de projeto.", watch: "Mídia consome muitos tokens. Reduza resolução/trechos e use modelos flash quando a tarefa permitir." },
+    { key: "volume", label: "Volume e classificação", pick: "nvidia", alt: "openrouter", why: "Para muitos itens simples, o custo domina. O NVIDIA NIM está com custo zero no seu plano atual; o OpenRouter oferece modelos baratos e fallback com a mesma API.", watch: "Modelos abertos variam mais. Rode uma amostra de qualidade antes de migrar um pipeline inteiro." },
+    { key: "privacy", label: "Dados sensíveis / offline", pick: "ollama", alt: null, why: "Nada sai da máquina. O limite é hardware, não cota de nuvem. Use para dados que não podem trafegar e para experimentos locais.", watch: "Modelos grandes sem VRAM suficiente degradam. Escolha quantização/tamanho e rode um modelo por vez." },
+    { key: "fallback", label: "Fallback e comparação", pick: "openrouter", alt: "nvidia", why: "Uma única API para comparar modelos e trocar de provedor quando um cai. Ideal como camada de resiliência e para testar alternativas.", watch: "Defina limite de crédito e acompanhe por modelo. Sem limite, fallback vira gasto silencioso." },
+    { key: "research", label: "Pesquisa e contexto enorme", pick: "gemini", alt: "claude", why: "Contextos muito longos e documentos grandes são o terreno do Gemini. O Claude compete quando o que importa é a qualidade da síntese.", watch: "Contexto grande não é gratuito: cache e recorte de documentos são as alavancas." },
+  ];
+
+  const MANUAL_ORDER = ["codex", "claude", "antigravity", "gemini", "gemini-cli", "openrouter", "nvidia", "ollama", "cloudflare-ai", "opencode"];
+
+  const CHANGELOG = [
+    { date: "03/11/2026", title: "v0.1 · Atlas vivo", text: "Dez alas, cota do Codex e do Claude, gráfico hora a hora, mapa de calor, radar de risco, cockpit com diagnósticos e prompts prontos. Manual da Frota com nove IAs conectadas.", now: true },
+    { date: "02/11/2026", title: "Cotas e coletores", text: "Leitura somente-local do 9router, Qoder Desktop e coletor. Sanitização de chaves, redaction de contas e servidor em 127.0.0.1.", now: false },
+    { date: "01/11/2026", title: "Frota e projetos", text: "Inventário de conexões, modelos, combos, projetos e sessões. Primeiros diagnósticos de erro com prompt de correção.", now: false },
+    { date: "31/10/2026", title: "Fundação", text: "Primeiro snapshot derivado: tokens, custo, cache e distribuição por provedor. Nenhum prompt persistido.", now: false },
+  ];
+
+  const ROADMAP = [
+    { key: "core", title: "Núcleo local-first", sub: "9router + Qoder + coletor, sem nuvem", status: "feito", base: 0 },
+    { key: "manual", title: "Manual da Frota", sub: "decisor de IA com docs oficiais", status: "feito", base: 0 },
+    { key: "share", title: "Cartão compartilhável", sub: "imagem do resumo semanal", status: "próximo", base: 0 },
+    { key: "auth", title: "Login opcional GitHub", sub: "só para comunidade, nunca para os dados", status: "planejado", base: 0 },
+    { key: "templates", title: "Templates da Guilda", sub: "combos, políticas e manuais da comunidade", status: "planejado", base: 0 },
+    { key: "sdk", title: "SDK de coletores", sub: "plugue qualquer IDE ou roteador", status: "planejado", base: 0 },
+  ];
+
+  /* ============================================================ FLUXO */
+
+  WING_RENDERERS.fluxo = () => {
+    const S = state.snap;
+    const t = S.totals;
+    const today = S.today;
+    const q = S.quota?.codex;
+    const days = state.projectionDays;
+    const avgCost = Number(t.avgCost) || 0;
+    const todayCost = Number(today.cost) || 0;
+    const providers = (S.providers || []).slice(0, 4);
+    const daysRows = (S.series || []).slice(-7).reverse();
+    const maxDay = Math.max(1, ...daysRows.map((d) => d.tokens));
+    return `
+      <div class="w-hero">
+        <div class="big">${compact(t.tokens)}<small> tokens</small></div>
+        <div class="copy">
+          <b>${int(t.requests)} chamadas em ${t.activeDays} dias ativos</b>
+          <p>Hoje foram <b>${compact(today.tokens)} tokens</b> e <b>${money(today.cost)}</b>. A média dos dias ativos é ${compact(t.avgTokens)} tokens e ${money(t.avgCost)} por dia. O gráfico projeta os dois ritmos para você decidir antes do reset.</p>
+        </div>
+        <div class="side">
+          <button class="btn ghost" data-act="copy-report">Copiar relatório</button>
+          <button class="btn primary" data-act="sim-days" data-days="${days === 7 ? 30 : 7}">${days === 7 ? "Projetar 30 dias" : "Voltar a 7 dias"}</button>
+        </div>
+      </div>
+      <div class="w-kpis">
+        <div class="w-kpi"><span class="k-label"><i></i>hoje</span><b>${compact(today.tokens)}</b><em>${int(today.requests)} chamadas · ${money(today.cost)}</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#3a8fd0"></i>cache</span><b>${pct(t.cacheHit)}</b><em>${compact(t.cached)} tokens reaproveitados</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#e3a33f"></i>projeção ${days}d</span><b>${money(avgCost * days)}</b><em>no ritmo de hoje: ${money(todayCost * days)}</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#8b7ad4"></i>folga Codex</span><b>${q?.available ? pct(q.week_free, 0) : "—"}</b><em>${q?.available ? `reset em ${until(q.week_reset)}` : "cota não exposta"}</em></div>
+      </div>
+      <div class="w-grid three">
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Projeção de gasto</h3><p>média dos dias ativos vs ritmo de hoje · próximos ${days} dias</p></div><span class="pill info">${days} dias</span></div>
+          <div class="w-graph">${projectionSvg(days)}</div>
+          <div class="proj-box" style="margin-top:6px">
+            <div class="proj-read"><b>${money(avgCost * days)}</b><span>se manter a média · <b>${money(todayCost * days)}</b> se repetir hoje (parcial)</span></div>
+            <div class="proj-line"><span>Simular outro horizonte</span><div class="sim-btns">${[7, 14, 30].map((d) => `<button class="btn ${d === days ? "primary" : "ghost"}" data-act="sim-days" data-days="${d}">${d}d</button>`).join("")}</div></div>
+          </div>
+        </div>
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Quem puxa o consumo</h3><p>${providers.length} provedores no período</p></div><span class="pill">${money(t.cost)}</span></div>
+          <div class="w-donut">${donutSvg(providers)}<div class="w-legend">${providers.map((p) => `<div class="lg-row"><i style="background:${provColor(p.provider)}"></i><span>${esc(provName(p.provider))}</span><b>${pct(p.share, 0)}</b></div>`).join("")}</div></div>
+          <div class="w-card-head" style="margin:14px 0 6px"><div><h3 style="font-size:11px">Cota agora</h3><p>leitura local do 9router</p></div></div>
+          ${[["codex", S.quota?.codex], ["claude", S.quota?.claude]].map(([k, x]) => x?.available ? `<div class="proj-line" style="margin-bottom:7px"><span>${esc(provName(k))} · semana</span><b style="font-size:11px">${pct(x.week_free, 0)} livre</b></div><div class="w-bar" style="margin-bottom:9px"><i style="width:${clamp(x.week_free)}%;--bc:${provColor(k)}"></i></div>` : "").join("")}
+          <div class="proj-line"><span>ritmo / meta Codex</span><b style="font-size:10px">${q?.available ? `${pct(q.pace)} / ${pct(q.target)}` : "—"}</b></div>
+        </div>
+      </div>
+      ${budgetWingCard()}
+      ${healthCard()}
+      <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>Mapa de calor · hoje</h3><p>onde as horas foram consumidas</p></div><span class="pill info">${compact(today.tokens)} tokens</span></div>
+        ${heatmapHtml()}
+      </div>
+      <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>Últimos dias</h3><p>comparado com a média dos dias ativos</p></div><span class="pill">${money(t.cost)} no total</span></div>
+        <div class="w-table">
+          <div class="w-row head" style="grid-template-columns:minmax(0,1fr) 76px 90px 86px 90px"><span>dia</span><span>chamadas</span><span>tokens</span><span>custo</span><span>vs média</span></div>
+          ${daysRows.map((d) => {
+            const delta = t.avgTokens ? ((d.tokens - t.avgTokens) / t.avgTokens) * 100 : 0;
+            return `<div class="w-row" style="grid-template-columns:minmax(0,1fr) 76px 90px 86px 90px">
+              <span class="r-main"><b>${esc(d.label)}</b><span>${esc(weekdayName(dateObj(d.date) || new Date()).replace(/^./, (c) => c.toUpperCase()))}</span></span>
+              <span class="num">${int(d.requests)}</span>
+              <span class="num">${compact(d.tokens)}</span>
+              <span class="num">${money(d.cost)}</span>
+              <span class="num" style="color:${delta > 0 ? "#b0603c" : "#287d59"}">${delta > 0 ? "▲" : "▼"} ${pct(Math.abs(delta), 0)}</span>
+            </div>`;
+          }).join("")}
+        </div>
+        <div class="drw-note" style="margin-top:10px">A projeção usa a média dos dias ativos, não a média calendário: dias sem chamada não diluem o ritmo. “Ritmo de hoje” é um limite superior porque o dia ainda está em curso.</div>
+      </div>
+    `;
+  };
+
+  /* ============================================================ SESSÕES */
+
+  function sessionList() {
+    const S = state.snap;
+    const q = nkey(state.sessionQuery).trim();
+    let rows = (S.qoder?.sessions || []).filter((s) => !q || nkey(`${s.title} ${s.project} ${s.model}`).includes(q));
+    const sort = state.sessionSort;
+    rows = rows.slice().sort((a, b) => {
+      if (sort === "context") return (b.context_pct || 0) - (a.context_pct || 0);
+      if (sort === "messages") return (b.messages || 0) - (a.messages || 0);
+      if (sort === "dupes") return (b.duplicates || 0) - (a.duplicates || 0);
+      return String(b.updated_at).localeCompare(String(a.updated_at));
+    });
+    return rows;
+  }
+
+  function contextAverage() {
+    const sessions = state.snap?.qoder?.sessions || [];
+    if (!sessions.length) return [];
+    const bucket = new Map();
+    sessions.forEach((s) => (s.context || []).forEach((c) => {
+      const cur = bucket.get(c.name) || { name: c.name, total: 0, n: 0 };
+      cur.total += Number(c.pct) || 0;
+      cur.n += 1;
+      bucket.set(c.name, cur);
+    }));
+    return [...bucket.values()].map((x) => ({ name: x.name, pct: x.total / Math.max(1, x.n) })).sort((a, b) => b.pct - a.pct);
+  }
+
+  WING_RENDERERS.sessoes = () => {
+    const S = state.snap;
+    const all = S.qoder?.sessions || [];
+    const rows = sessionList();
+    const q = state.sessionQuery;
+    const msgs = all.reduce((a, s) => a + (s.messages || 0), 0);
+    const calls = all.reduce((a, s) => a + (s.tool_calls || 0), 0);
+    const avgCtx = all.length ? all.reduce((a, s) => a + (s.context_pct || 0), 0) / all.length : 0;
+    const ctx = contextAverage();
+    const pressure = all.slice().sort((a, b) => (b.context_pct || 0) - (a.context_pct || 0)).slice(0, 3);
+    return `
+      <div class="w-hero">
+        <div class="big">${all.length}<small> sessões</small></div>
+        <div class="copy"><b>${int(msgs)} mensagens · ${int(calls)} tool calls</b><p>Metadados do Qoder Desktop: contexto, mensagens e ferramentas. Nenhum prompt ou trecho de código é lido. A coluna de contexto mostra quanto da janela já foi ocupado antes de compactar.</p></div>
+        <div class="side"><button class="btn ghost" data-act="copy-context">Copiar contexto</button><button class="btn primary" data-act="ask" data-q="Quais sessões estão com contexto alto e como reduzir?">Pedir plano</button></div>
+      </div>
+      <div class="w-kpis">
+        <div class="w-kpi"><span class="k-label"><i></i>contexto médio</span><b>${pct(avgCtx, 0)}</b><em>${pressure.filter((s) => s.context_pct >= 50).length} sessões acima de 50%</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#3a8fd0"></i>mensagens</span><b>${int(msgs)}</b><em>${(msgs / Math.max(1, all.length)).toFixed(1).replace(".", ",")} por sessão</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#8b7ad4"></i>tool calls</span><b>${int(calls)}</b><em>${(calls / Math.max(1, all.length)).toFixed(0)} por sessão</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#e3a33f"></i>leituras dup.</span><b>${sumDup() ? compact(sumDup()) : "0"}</b><em>${(S.qoder?.duplicates || []).length} arquivos relidos</em></div>
+      </div>
+      <div class="w-toolbar">
+        <label class="w-search">${railIcon("sessoes")}<input id="sessionSearch" value="${esc(q)}" placeholder="Buscar sessão, projeto ou modelo…" aria-label="Buscar sessões"></label>
+        <span class="tag-mini" id="sessionCount">${rows.length} de ${all.length}</span>
+        ${[["context", "contexto"], ["messages", "mensagens"], ["dupes", "duplicatas"], ["recent", "recentes"]].map(([k, label]) => `<button class="task-chip ${state.sessionSort === k ? "on" : ""}" data-act="session-sort" data-key="${k}">${label}</button>`).join("")}
+      </div>
+      <div class="w-grid three">
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Sessões monitoradas</h3><p>clique para ver composição do contexto</p></div><span class="pill">${pct(avgCtx, 0)} médio</span></div>
+          <div class="w-table">
+            <div class="w-row head" style="grid-template-columns:minmax(0,1.65fr) minmax(0,1fr) 42px 48px 40px 62px"><span>sessão</span><span>contexto</span><span>msg</span><span>tools</span><span>dup</span><span>vista</span></div>
+            ${rows.map((s) => {
+              const ctxSeg = (s.context || []).filter((c) => c.name !== "free_space").map((c) => `<i style="width:${clamp(c.pct)}%"></i>`).join("");
+              return `<button class="w-row" data-session-row data-search="${esc(`${s.title} ${s.project} ${s.model}`)}" data-act="session" data-id="${esc(s.id)}" style="grid-template-columns:minmax(0,1.65fr) minmax(0,1fr) 42px 48px 40px 62px">
+                <span class="r-main" style="display:block"><b style="display:block">${esc(s.title)}</b><span>${esc(s.project)} · ${esc(s.model)}</span></span>
+                <span><span class="ctx-bar">${ctxSeg}</span><small style="font-size:8px;color:#8aa0a9">${pct(s.context_pct, 0)}</small></span>
+                <span class="num">${int(s.messages)}</span>
+                <span class="num">${int(s.tool_calls)}</span>
+                <span class="num" style="color:${s.duplicates ? "#b0603c" : "#8aa0a9"}">${int(s.duplicates)}</span>
+                <span class="num" style="font-size:8px;font-family:Inter,sans-serif;font-weight:500;color:#8aa0a9">${esc(rel(s.updated_at))}</span>
+              </button>`;
+            }).join("") || `<div class="w-empty">Nenhuma sessão encontrada para “${esc(q)}”.</div>`}
+          </div>
+        </div>
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Onde o contexto vai</h3><p>média entre as sessões</p></div></div>
+          <div class="w-legend">${ctx.map((c, i) => `<div class="lg-row"><i style="background:${["#8ab7c9", "#6c9fb8", "#5c8fa9", "#2f9e6b", "#e3a33f", "#cfe2e9"][i % 6]}"></i><span>${esc(c.name.replace(/_/g, " "))}</span><b>${pct(c.pct, 0)}</b></div>`).join("")}</div>
+          <div class="w-card-head" style="margin:14px 0 6px"><div><h3 style="font-size:11px">Sob pressão</h3><p>maiores contextos agora</p></div></div>
+          ${pressure.map((s) => `<button class="dup-item" style="width:100%;text-align:left" data-act="session" data-id="${esc(s.id)}"><span class="dup-file"><b style="font-family:Inter,sans-serif;font-size:9px;font-weight:600">${esc(s.title)}</b><span>${esc(s.project)}</span></span><span class="dup-cost" style="color:#b06f1e">${pct(s.context_pct, 0)}</span></button>`).join("") || `<div class="w-empty">Sem sessões.</div>`}
+          <div class="drw-note">Contexto alto não é só custo: ele reduz a margem para a próxima mensagem e força compactação. Abra a sessão para ver a composição.</div>
+        </div>
+      </div>
+    `;
+  };
+
+  /* ============================================================ OFICINA */
+
+  WING_RENDERERS.oficina = () => {
+    const S = state.snap;
+    const qd = S.qoder || {};
+    const skills = qd.skills || { total: 0, included: 0, top: [] };
+    const dup = qd.duplicates || [];
+    const wasted = sumDup();
+    const art = qd.artifacts || { images: 0, attachments: 0, fileChanges: 0 };
+    const inv = S.inventory || {};
+    const codex = inv.codex || {};
+    const qinv = inv.qoder || {};
+    const hygiene = (S.suggestions || []).slice(0, 5);
+    const top = (skills.top || []).slice(0, 8);
+    const maxSkill = Math.max(0.01, ...top.map((s) => s.pct || 0));
+    return `
+      <div class="w-hero">
+        <div class="big">${int(skills.total)}<small> skills</small></div>
+        <div class="copy"><b>${int(wasted)} tokens reprocessados em ${dup.length} arquivos</b><p>A Oficina mostra o que entra no contexto sem aparecer no gráfico: skills carregadas, artefatos e arquivos lidos mais de uma vez na mesma sessão. É aqui que o desperdício silencioso aparece.</p></div>
+        <div class="side"><button class="btn ghost" data-act="ask" data-q="Como reduzir o desperdício de leituras repetidas e skills?">Pedir plano</button><button class="btn primary" data-act="copy-context">Copiar contexto</button></div>
+      </div>
+      <div class="w-kpis">
+        <div class="w-kpi"><span class="k-label"><i></i>skills carregadas</span><b>${int(skills.total)}</b><em>${int(skills.included)} incluídas no contexto</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#3a8fd0"></i>artefatos</span><b>${int(art.images + art.attachments + art.fileChanges)}</b><em>${int(art.images)} imagens · ${int(art.fileChanges)} mudanças</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#e3a33f"></i>reprocessado</span><b>${compact(wasted)}</b><em>${pct((wasted / Math.max(1, S.totals.input)) * 100)} do input do período</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#8b7ad4"></i>plugins</span><b>${int(qinv.pluginsEnabled || 0)}/${int(qinv.plugins || 0)}</b><em>Qoder · Codex: ${int(codex.pluginsEnabled || 0)}/${int(codex.plugins || 0)}</em></div>
+      </div>
+      <div class="w-grid">
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Livro-caixa do desperdício</h3><p>mesmo arquivo lido várias vezes na sessão</p></div><span class="pill warn">${compact(wasted)} tokens</span></div>
+          ${dup.map((d) => `<div class="dup-item"><span class="dup-file"><b title="${esc(d.path)}">${esc(shortPath(d.path))}</b><span>${int(d.reads)} leituras · ${compact(d.wasted)} tokens desperdiçados</span></span><span class="dup-cost">${compact(d.wasted)}</span></div>`).join("") || `<div class="w-empty">Nenhuma leitura repetida detectada.</div>`}
+          <div class="drw-note">A estimativa usa o tamanho do arquivo dividido por 4. Não é uma cobrança: é o volume que voltou ao contexto sem necessidade.</div>
+        </div>
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Artefatos e superfície</h3><p>o que a operação produz e carrega</p></div></div>
+          <div class="w-subgrid">
+            <div class="w-mini"><span>imagens</span><b>${int(art.images)}</b><em>no período</em></div>
+            <div class="w-mini"><span>anexos</span><b>${int(art.attachments)}</b><em>arquivos</em></div>
+            <div class="w-mini"><span>mudanças</span><b>${int(art.fileChanges)}</b><em>edições</em></div>
+          </div>
+          <div class="w-card-head" style="margin:14px 0 6px"><div><h3 style="font-size:11px">Higiene da frota</h3><p>plugins e MCP entram no input fixo</p></div></div>
+          <div class="w-row" style="grid-template-columns:minmax(0,1fr) auto"><span class="r-main"><b>Codex plugins</b><span>${int(codex.pluginsEnabled || 0)} ativos de ${int(codex.plugins || 0)}</span></span><span class="tag-mini warn">revisar</span></div>
+          <div class="w-row" style="grid-template-columns:minmax(0,1fr) auto"><span class="r-main"><b>Codex MCP</b><span>${int(codex.mcp || 0)} servidores</span></span><span class="tag-mini">${int(codex.mcp || 0)}</span></div>
+          <div class="w-row" style="grid-template-columns:minmax(0,1fr) auto"><span class="r-main"><b>Qoder plugins</b><span>${int(qinv.pluginsEnabled || 0)} ativos de ${int(qinv.plugins || 0)}</span></span><span class="tag-mini ok">enxuto</span></div>
+          <div class="w-row" style="grid-template-columns:minmax(0,1fr) auto"><span class="r-main"><b>Headroom</b><span>${S.router?.headroom?.online ? "compressor online" : "compressor offline"}</span></span><span class="tag-mini ${S.router?.headroom?.online ? "ok" : "warn"}">${S.router?.headroom?.online ? "online" : "offline"}</span></div>
+        </div>
+      </div>
+      <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>Skills mais carregadas</h3><p>participação no contexto das sessões</p></div><span class="pill">${int(skills.total)} no total</span></div>
+        <div class="w-table">
+          ${top.map((s, i) => `<div class="w-row" style="grid-template-columns:24px minmax(0,1.4fr) minmax(0,1fr) 48px"><span class="w-rank${i === 0 ? " top" : ""}">${i + 1}</span><span class="r-main" style="display:block"><b style="display:block">${esc(s.name)}</b><span>${esc(s.source)}</span></span><span class="w-bar"><i style="width:${clamp((s.pct / maxSkill) * 100)}%;--bc:#3a8fd0"></i></span><span class="num">${pct(s.pct, 1)}</span></div>`).join("") || `<div class="w-empty">Nenhuma skill carregada.</div>`}
+        </div>
+      </div>
+      <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>Fila de higiene</h3><p>sinais que custam contexto ou disponibilidade</p></div><span class="pill ${hygiene.length ? "warn" : "ok"}">${hygiene.length} itens</span></div>
+        ${hygiene.map((s) => `<button class="w-row" style="grid-template-columns:minmax(0,1.3fr) minmax(0,2fr) auto;width:100%;text-align:left" data-act="ask" data-q="${esc(`Como resolvo: ${s.title}?`)}"><span class="r-main"><b>${esc(s.title)}</b><span>${s.level === "warn" ? "atenção" : "nota"}</span></span><span class="r-txt" style="font-size:8.5px;color:#6a8794;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(String(s.detail).slice(0, 110))}</span><span class="tag-mini ${s.level === "warn" ? "warn" : ""}">${s.level === "warn" ? "agir" : "ok"}</span></button>`).join("") || `<div class="w-empty">Nada na fila.</div>`}
+      </div>
+    `;
+  };
+
+  /* ============================================================ ORÁCULO */
+
+  function oracleReply(text) {
+    const S = state.snap;
+    const q = nkey(text);
+    const qd = S.quota?.codex;
+    const qc = S.quota?.claude;
+    const line = (s) => `<li>${s}</li>`;
+    if (/folga|cota|quota|limite|sol|reset/.test(q)) {
+      const bits = [];
+      if (qd?.available) bits.push(line(`Codex: <b>${pct(qd.week_free)}</b> de folga na semana, <b>${pct(qd.session_free)}</b> na janela de 5h. Reset semanal em ${esc(until(qd.week_reset))}.`));
+      if (qc?.available) bits.push(line(`Claude: <b>${pct(qc.week_free)}</b> de folga semanal e <b>${pct(qc.credit_free || 0)}</b> de crédito. O 429 é de crédito, não de janela.`));
+      bits.push(line(`Ritmo Codex: <b>${pct(qd?.pace || 0)}</b> ao dia contra meta de <b>${pct(qd?.target || 0)}</b>. ${qd && qd.pace < qd.target ? "Você está abaixo da meta; há espaço." : "Você está acima da meta; reduza o ritmo até o reset."}`));
+      bits.push(line("Para preservar: reuse a mesma sessão (cache), evite anexos grandes e desligue plugins/MCP que não usa."));
+      return `<b>Folga real da frota</b><ul>${bits.join("")}</ul><span style="display:block;margin-top:6px;color:#7b959e">Clique no sol para alternar as janelas. Duplo clique abre o detalhamento.</span>`;
+    }
+    if (/qual ia|qual usar|melhor ia|tarefa|comparar|escolher|decis|manual/.test(q)) {
+      const pick = MANUAL_TASKS.slice(0, 4).map((t) => line(`<b>${esc(t.label)}</b> → ${esc(provName(t.pick))}${t.alt ? ` (alternativa: ${esc(provName(t.alt))})` : ""}`)).join("");
+      return `<b>Decisor rápido</b><ul>${pick}</ul>Para uma decisão com os seus números, abra a Biblioteca: o Manual da Frota cruza finalidade, cota, custo e documentação oficial de cada IA conectada.`;
+    }
+    if (/custo|gast|econom|reduz|barat|caro|orçamento|orcamento/.test(q)) {
+      const top = S.insights?.mostExpensive;
+      return `<b>Onde o dinheiro está</b><ul>${line(`Hoje: <b>${money(S.today.cost)}</b> em ${int(S.today.requests)} chamadas.`)}${line(`Custo médio por chamada: <b>${money(S.insights?.costPerReq || 0)}</b>.`)}${top ? line(`Modelo mais caro: <b>${esc(modelName(top.model))}</b> com ${money(top.cost)} (${pct(top.share, 0)} do volume).`) : ""}${line(`Cache em <b>${pct(S.totals.cacheHit)}</b>: ${compact(S.totals.cached)} tokens reaproveitados.`)}</ul>Três alavancas: (1) manter o cache alto, (2) mandar volume simples para NVIDIA/OpenRouter, (3) reservar modelos grandes para arquitetura e depuração difícil.`;
+    }
+    if (/erro|falha|403|429|diagn|corrig|9router/.test(q)) {
+      const errs = (S.errors || []).slice(0, 5).map((e) => line(`<b>${esc(provName(e.provider))} · ${esc(e.diagnosis?.title || "Erro")}</b> (${e.count}×): ${esc(e.diagnosis?.fix || "")}`)).join("");
+      return `<b>Diagnóstico aberto</b><ul>${errs || line("Nenhum erro no período.")}</ul>Abra a Ajuda para copiar um prompt pronto com causa, correção e política de fallback.`;
+    }
+    if (/cache/.test(q)) {
+      return `<b>Cache</b><ul>${line(`Acerto atual: <b>${pct(S.totals.cacheHit)}</b>.`)}${line(`${compact(S.totals.cached)} de ${compact(S.totals.input)} tokens de input foram reaproveitados.`)}${line("Para manter: continue na mesma sessão, repita o mesmo prefixo de sistema e evite reordenar anexos.")}</ul>`;
+    }
+    if (/sessao|contexto|compact/.test(q)) {
+      const top = (S.qoder?.sessions || []).slice().sort((a, b) => (b.context_pct || 0) - (a.context_pct || 0)).slice(0, 3);
+      return `<b>Pressão de contexto</b><ul>${top.map((s) => line(`<b>${esc(s.title)}</b> (${esc(s.project)}): ${pct(s.context_pct, 0)} · ${int(s.messages)} mensagens`)).join("") || line("Sem sessões monitoradas.")}</ul>Se o contexto passa de 50%, a próxima mensagem pode forçar compactação. Abra a sessão e veja o que está ocupando espaço.`;
+    }
+    if (/skill|desperd|leitura|duplic|arquivo/.test(q)) {
+      const d = (S.qoder?.duplicates || []).slice(0, 3);
+      return `<b>Desperdício silencioso</b><ul>${line(`${compact(sumDup())} tokens reprocessados em ${(S.qoder?.duplicates || []).length} arquivos.`)}${d.map((x) => line(`${esc(shortPath(x.path))}: ${int(x.reads)} leituras, ${compact(x.wasted)} tokens`)).join("")}</ul>Peça ao agente para reler só o trecho alterado e use busca antes de abrir o arquivo inteiro.`;
+    }
+    if (/projeto/.test(q)) {
+      return `<b>Projetos com mais sessões</b><ul>${(S.projects || []).slice(0, 5).map((p) => line(`<b>${esc(p.name)}</b>: ${int(p.sessions)} sessões · ${esc((p.ais || []).join(", "))}`)).join("")}</ul>Abra Sessões para ver contexto e duplicatas por projeto.`;
+    }
+    if (/projec|futuro|30 dias|semana|mês|mes/.test(q)) {
+      return `<b>Projeção</b><ul>${line(`Média dos dias ativos: <b>${money(S.totals.avgCost)}</b>/dia → <b>${money(S.totals.avgCost * 7)}</b> em 7 dias e <b>${money(S.totals.avgCost * 30)}</b> em 30.`)}${line(`Ritmo de hoje (parcial): <b>${money(S.today.cost)}</b> → <b>${money(S.today.cost * 7)}</b> em 7 dias.`)}${line(`Folga Codex: ${pct(qd?.week_free || 0)}.`)}</ul>Use o simulador do Fluxo para trocar o horizonte e comparar os dois ritmos.`;
+    }
+    return `<b>Resumo da operação</b><ul>${line(`Hoje: <b>${compact(S.today.tokens)} tokens</b> em ${int(S.today.requests)} chamadas, ${money(S.today.cost)}.`)}${line(`Cache: <b>${pct(S.totals.cacheHit)}</b> · ${compact(S.totals.cached)} tokens reaproveitados.`)}${line(`Provedor líder: <b>${esc(provName(S.insights?.topProvider?.provider))}</b> com ${pct(S.insights?.topProvider?.share || 0)}.`)}${line(`Folga Codex: <b>${pct(qd?.week_free || 0)}</b> · Claude: <b>${pct(qc?.week_free || 0)}</b>.`)}${line(`${(S.errors || []).length} erros diagnosticados e ${(S.qoder?.duplicates || []).length} arquivos com leitura repetida.`)}</ul>Pergunte “qual IA usar para esta tarefa?”, “onde estou desperdiçando?” ou “como reduzir o custo hoje?”.`;
+  }
+
+  function seedChat() {
+    if (state.chat.length) return;
+    const S = state.snap;
+    const q = S.quota?.codex;
+    const top = (S.errors || [])[0];
+    state.chat = [{
+      role: "bot",
+      brief: true,
+      html: `<div class="ora-brief">
+        <div class="ora-brief-head"><span class="dot-live"></span><b>Briefing de agora</b><em>${esc(ago(S.meta.router_age))} · snapshot local</em></div>
+        <div class="ora-stats">
+          <div><span>tokens hoje</span><b>${compact(S.today.tokens)}</b><small>${int(S.today.requests)} chamadas</small></div>
+          <div><span>cache</span><b>${pct(S.totals.cacheHit)}</b><small>${compact(S.totals.cached)} aproveitados</small></div>
+          <div><span>custo hoje</span><b>${money(S.today.cost)}</b><small>${money(S.totals.avgCost * 30)} em 30d pela média</small></div>
+          <div><span>folga Codex</span><b>${q?.available ? pct(q.week_free, 0) : "—"}</b><small>${q?.available ? `reset em ${until(q.week_reset)}` : "cota não exposta"}</small></div>
+        </div>
+        ${top ? `<button class="ora-decision" data-act="error-detail" data-i="0">
+          <span class="ora-dec-copy"><small>decisão pendente</small><b>${esc(provName(top.provider))} · ${esc(top.diagnosis?.title || "diagnóstico")}</b><em>${esc(top.diagnosis?.fix || top.message)}</em></span>
+          <span class="ora-dec-go">abrir</span>
+        </button>` : ""}
+        <p class="ora-foot">Olá, ${esc(operatorName())}. Leio só o seu snapshot: ${int((S.errors || []).length)} diagnósticos abertos, ${int(S.qoder?.sessions?.length || 0)} sessões e ${manualKeys().length} IAs no manual. Nada sai da máquina.</p>
+      </div>`
+    }];
+  }
+
+  function renderChat() {
+    const log = $(".chat-log");
+    if (!log) return;
+    const S = state.snap;
+    const caps = state.chat.length <= 1 ? `<div class="ora-cap">
+      <div class="ora-cap-head">ir direto ao ponto</div>
+      <div class="ora-cap-grid">
+        ${[
+          ["Manual da Frota", `${manualKeys().length} IAs · escolha por tarefa`, "biblioteca"],
+          ["Sessões Qoder", `${int(S.qoder?.sessions?.length || 0)} sessões · ${int(S.qoder?.skills?.length || 0)} skills`, "sessoes"],
+          ["Fluxo e projeção", `${money(S.totals.avgCost * 30)} em 30 dias`, "fluxo"],
+          ["Radar de riscos", `${int((S.errors || []).length)} diagnósticos abertos`, "ajuda"],
+        ].map(([title, sub, wing]) => `<button data-act="wing" data-key="${wing}"><span><b>${esc(title)}</b><small>${esc(sub)}</small></span><i>→</i></button>`).join("")}
+      </div>
+      <div class="ora-scan">
+        <div class="ora-scan-head">o que eu já reparei</div>
+        ${[
+          S.insights?.topProvider ? [`${provName(S.insights.topProvider.provider)} puxa ${pct(S.insights.topProvider.share, 0)} do volume`, `${compact(S.insights.topProvider.tokens)} tokens · ${money(S.insights.topProvider.cost)}`] : null,
+          [`${pct(S.totals.tokens ? ((S.insights?.freeTokensEstimate || 0) / S.totals.tokens) * 100 : 0, 0)} do consumo veio de graça`, `${compact(S.insights?.freeTokensEstimate || 0)} tokens sem custo`],
+          [`Hoje está ${int(S.insights?.todayVsPrev || 0)}% acima de ontem`, `${money(S.insights?.costPerReq || 0)} por chamada`],
+        ].filter(Boolean).map(([label, value]) => `<div class="ora-scan-row"><i></i><b>${esc(label)}</b><em>${esc(value)}</em></div>`).join("")}
+      </div>
+      <div class="ora-cap-foot">cada resposta é calculada no seu snapshot local · sem modelo na nuvem</div>
+    </div>` : "";
+    log.innerHTML = state.chat.map((m) => `<div class="chat-msg ${m.role === "me" ? "me" : "bot"}${m.brief ? " brief" : ""}">${m.role === "me" ? esc(m.text || "") : m.html}</div>`).join("") + caps;
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function sendChat(text) {
+    const value = String(text || "").trim();
+    if (!value || !state.snap) return;
+    if (!state.wing) openWing("oraculo");
+    state.chat.push({ role: "me", text: value });
+    state.chat.push({ role: "bot", html: oracleReply(value) });
+    renderChat();
+    const input = $("#chatInput");
+    if (input) { input.value = ""; input.focus(); }
+  }
+
+  WING_RENDERERS.oraculo = () => {
+    const S = state.snap;
+    seedChat();
+    const seeds = [
+      "Qual IA usar para cada tarefa?",
+      "Onde estou desperdiçando?",
+      "Quanta folga eu tenho?",
+      "Como reduzir o custo hoje?",
+      "O que está com erro?",
+    ];
+    return `<div class="oraculo">
+      <div class="chat-shell">
+        <div class="chat-log" aria-live="polite"></div>
+        <div class="chat-quick">${seeds.map((s) => `<button data-act="chat-quick" data-q="${esc(s)}">${esc(s)}</button>`).join("")}</div>
+        <div class="chat-input">
+          <input id="chatInput" placeholder="Pergunte sobre cota, custo, erro, sessão ou qual IA usar…" autocomplete="off" aria-label="Mensagem para o Oráculo">
+          <button class="btn primary" data-act="chat-send">Enviar</button>
+          <button class="btn ghost" data-act="clear-chat" title="Limpar conversa">Limpar</button>
+        </div>
+      </div>
+      <div class="chat-side">
+        <div class="w-card"><div class="w-card-head"><div><h3 style="font-size:11px">Sinais que eu leio</h3><p>snapshot local</p></div></div>
+          <div class="src-list">${(S.meta.sources || []).map((s) => `<div class="src-row"><span class="src-dot ${s.status === "ok" ? "" : "stale"}"></span><span class="src-main"><b>${esc(s.label)}</b><span>${esc(shortPath(s.path))}</span></span><span class="tag-mini ${s.status === "ok" ? "ok" : "warn"}">${esc(s.status)}</span></div>`).join("")}</div>
+        </div>
+        <div class="w-card"><div class="w-card-head"><div><h3 style="font-size:11px">Como eu respondo</h3><p>sem modelo na nuvem</p></div></div>
+          <p>Minhas respostas são montadas por regras sobre os seus números. Eu não envio prompts, não leio código e não guardo o histórico fora do navegador.</p>
+          <div class="privacy-list" style="margin-top:8px">${["Respostas determinísticas e auditáveis", "Sem chave de API e sem custo por mensagem", "Histórico só nesta aba", "Você pode copiar o contexto para a sua IA preferida"].map((x) => `<div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg><span>${esc(x)}</span></div>`).join("")}</div>
+        </div>
+        <div class="w-card"><div class="w-card-head"><div><h3 style="font-size:11px">Atalhos</h3><p>dentro do Oráculo</p></div></div><div class="shortcut-grid">${[["Enviar", "↵"], ["Fechar", "esc"], ["Busca global", "⌘K"], ["Atualizar", "R"]].map(([a, b]) => `<div class="shortcut"><span>${a}</span><kbd>${b}</kbd></div>`).join("")}</div></div>
+      </div>
+    </div>`;
+  };
+
+  /* ============================================================ BIBLIOTECA · MANUAL DA FROTA */
+
+  function manualKeys() {
+    const connected = connectedKeys();
+    const extras = MANUAL_ORDER.filter((k) => !connected.includes(k) && KNOWLEDGE[k]);
+    return [...connected, ...extras];
+  }
+
+  function manualTask() {
+    return MANUAL_TASKS.find((t) => t.key === state.manualTask) || MANUAL_TASKS[0];
+  }
+
+  WING_RENDERERS.biblioteca = () => {
+    const S = state.snap;
+    const keys = manualKeys();
+    const connected = connectedKeys();
+    const task = manualTask();
+    const pickKb = knowledgeFor(task.pick);
+    const altKb = task.alt ? knowledgeFor(task.alt) : null;
+    const pickUsage = usageFor(task.pick);
+    const freeShare = S.totals.tokens ? ((S.insights?.freeTokensEstimate || 0) / S.totals.tokens) * 100 : 0;
+    const statusCount = connected.filter((k) => providerStatus(k).cls === "ok").length;
+    return `
+      <div class="manual-hero">
+        <div class="manual-copy">
+          <h3>Manual da Frota</h3>
+          <p>Nove IAs plugadas, nove jeitos de gastar. Esta ala reúne a <b>finalidade de cada IA</b>, o que ela faz melhor que as outras, o que evitar e as alavancas reais para administrar consumo e cota. A decisão vem antes do prompt.</p>
+        </div>
+        <div class="manual-now">
+          <span class="mn-label">sua frota agora</span>
+          <div class="mn-big">${connected.length}<small> IAs plugadas</small></div>
+          <div class="mn-row"><span>conexões saudáveis</span><b>${statusCount} de ${connected.length}</b></div>
+          <div class="mn-row"><span>volume gratuito</span><b>${pct(freeShare, 0)}</b></div>
+          <div class="mn-row"><span>provedores medindo</span><b>${(S.providers || []).length}</b></div>
+          <div class="mn-row"><span>manual atualizado</span><b>3 nov 2026</b></div>
+        </div>
+      </div>
+      <div class="decision">
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Decisor de tarefa</h3><p>escolha o tipo de trabalho e veja a rota recomendada</p></div><span class="pill info">${keys.length} manuais</span></div>
+          <div class="task-chips">${MANUAL_TASKS.map((t) => `<button class="task-chip ${t.key === task.key ? "on" : ""}" data-act="manual-task" data-key="${t.key}" style="--pc:${provColor(t.pick)}"><i></i>${esc(t.label)}</button>`).join("")}</div>
+          <div class="decision-card">
+            <div>
+              <h4>${esc(task.label)} → ${esc(provName(task.pick))}</h4>
+              <p>${esc(task.why)}</p>
+              <div class="drw-note" style="margin-top:9px;background:rgba(232,163,63,.08);border-color:rgba(232,163,63,.18)"><b style="color:#94631a">Atenção:</b> ${esc(task.watch)}</div>
+              <div class="drw-actions" style="margin-top:10px">
+                <button class="btn primary" data-act="provider-detail" data-key="${esc(task.pick)}">Abrir manual do ${esc(provName(task.pick))}</button>
+                <button class="btn ghost" data-act="ask" data-q="${esc(`Como usar ${provName(task.pick)} para ${task.label.toLowerCase()} sem estourar a cota?`)}">Perguntar ao Oráculo</button>
+              </div>
+            </div>
+            <div class="decision-runner">
+              <b>rota recomendada</b>
+              <div class="run" style="--pc:${provColor(task.pick)}"><i></i><b>${esc(provName(task.pick))}</b><span>${esc(quotaBadge(task.pick).text)}</span></div>
+              <div class="run" style="--pc:${provColor(task.alt || task.pick)}"><i></i><b>${esc(task.alt ? provName(task.alt) : "sem alternativa local")}</b><span>${esc(task.alt ? quotaBadge(task.alt).text : "—")}</span></div>
+              <div class="run"><i style="background:#8aa0a9"></i><b>uso atual</b><span>${pickUsage ? `${pct(pickUsage.share, 0)} do volume` : "sem uso"}</span></div>
+              <div class="run"><i style="background:#8aa0a9"></i><b>custo no período</b><span>${pickUsage ? money(pickUsage.cost) : "—"}</span></div>
+            </div>
+          </div>
+          ${pickKb ? `<div class="drw-note" style="margin-top:10px">${esc(pickKb.verdict)}${altKb ? ` <b>Alternativa:</b> ${esc(altKb.verdict)}` : ""}</div>` : ""}
+        </div>
+      </div>
+      <div class="w-card matrix">
+        <div class="w-card-head"><div><h3>Matriz de decisão</h3><p>finalidade, melhor uso, consumo e cota de cada IA</p></div><span class="pill">${connected.length} conectadas</span></div>
+        <div class="w-table">
+          <div class="w-row head"><span>IA</span><span>finalidade</span><span>melhor para</span><span>uso</span><span>cota</span><span>manual</span></div>
+          ${keys.map((k) => {
+            const kb = knowledgeFor(k) || {};
+            const u = usageFor(k);
+            const qb = quotaBadge(k);
+            return `<div class="w-row" style="--pc:${provColor(k)}"><span class="r-ai"><i></i><b>${esc(provName(k))}</b></span><span class="r-txt">${esc(kb.tag || "provedor")}</span><span class="r-txt">${esc((kb.best || [])[0] || "—")}</span><span class="num">${u ? pct(u.share, 0) : "—"}</span><span><span class="tag-mini ${qb.cls}">${esc(qb.text)}</span></span><button class="r-doc" data-act="provider-detail" data-key="${esc(k)}">abrir</button></div>`;
+          }).join("")}
+        </div>
+      </div>
+      <div class="fleet-grid" style="margin-top:12px">
+        ${keys.map((k) => {
+          const kb = knowledgeFor(k) || {};
+          const meta = provMeta(k);
+          const u = usageFor(k);
+          const st = providerStatus(k);
+          const qb = quotaBadge(k);
+          return `<article class="kb-card" style="--pc:${meta.color}">
+            <div class="kb-head"><span class="kb-mark">${esc(meta.glyph)}</span><div><h4>${esc(meta.name)}</h4><span>${esc(meta.vendor || "provedor")} · ${esc(kb.tag || "conectado")}</span></div><div class="kb-tags"><span class="tag-mini ${st.cls}">${esc(st.text)}</span><span class="tag-mini ${qb.cls}">${esc(qb.text)}</span></div></div>
+            <p class="kb-purpose">${esc(kb.purpose || "Provedor conectado à frota.")}</p>
+            <div class="kb-cols">
+              <div class="kb-col"><b>melhor para</b><div class="kb-list">${(kb.best || []).slice(0, 3).map((x) => `<div><i>✓</i><span>${esc(x)}</span></div>`).join("")}</div></div>
+              <div class="kb-col"><b>evite quando</b><div class="kb-list avoid">${(kb.avoid || []).slice(0, 3).map((x) => `<div><i>×</i><span>${esc(x)}</span></div>`).join("")}</div></div>
+            </div>
+            <div class="kb-manage">${(kb.manage || []).slice(0, 3).map((x) => `<div><i>→</i><span>${esc(x)}</span></div>`).join("")}</div>
+            <div class="kb-foot"><div class="kb-usage"><span class="w-bar"><i style="width:${clamp(u?.share || 0)}%;--bc:${meta.color}"></i></span><em>${u ? `${compact(u.tokens)} tokens · ${money(u.cost)} · ${pct(u.share, 0)}` : "sem consumo no período"}</em></div>${(kb.docs || []).slice(0, 2).map(([label, url]) => `<button class="kb-doc" data-act="open-url" data-url="${esc(url)}" title="${esc(url)}">${esc(label)} ↗</button>`).join("")}</div>
+            <div class="kb-verdict">${esc(kb.verdict || "")}</div>
+            <div class="drw-actions" style="margin-top:0"><button class="btn ghost" data-act="provider-detail" data-key="${esc(k)}">Manual completo</button><button class="btn ghost" data-act="focus-only" data-key="${esc(k)}">Filtrar uso</button></div>
+          </article>`;
+        }).join("")}
+      </div>
+      <div class="drw-note" style="margin-top:12px">Documentação oficial aberta em nova aba. Os links foram verificados em 3 nov 2026. Nenhuma chave, token ou credencial é exibida nesta ala.</div>
+    `;
+  };
+
+  /* ============================================================ DIÁRIO */
+
+  WING_RENDERERS.diario = () => {
+    const S = state.snap;
+    const xp = xpTotals();
+    const lv = levelFor(xp.xp);
+    const badges = [
+      { icon: "☀", label: "4 dias ativos", got: S.totals.activeDays >= 4 },
+      { icon: "⚡", label: "cache > 65%", got: S.totals.cacheHit >= 65 },
+      { icon: "◈", label: "6M tokens", got: S.totals.tokens >= 6e6 },
+      { icon: "✧", label: "9 IAs plugadas", got: connectedKeys().length >= 9 },
+      { icon: "⟡", label: "100 skills", got: (S.qoder?.skills?.total || 0) >= 100 },
+      { icon: "✓", label: "2 diagnósticos", got: state.reviewed.size >= 2 },
+    ];
+    return `
+      <div class="w-hero">
+        <div class="big">${int(S.totals.activeDays)}<small> dias</small></div>
+        <div class="copy"><b>Nível ${lv.level} · ${lv.name} · ${int(xp.xp)} XP</b><p>O Diário guarda o que mudou e o que você conquistou. As conquistas usam os seus números reais: cache, volume, frota conectada, skills e diagnósticos revisados.</p></div>
+        <div class="side"><button class="btn ghost" data-act="copy-report">Copiar changelog</button><button class="btn primary" data-act="ask" data-q="Como subir de nível no Rune e o que eu já conquistei?">Pedir plano</button></div>
+      </div>
+      <div class="w-kpis">
+        <div class="w-kpi"><span class="k-label"><i></i>XP total</span><b>${int(xp.xp)}</b><em>${xp.today} hoje · faltam ${int(Math.max(0, lv.next - xp.xp))} para o próximo</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#3a8fd0"></i>tokens</span><b>${compact(S.totals.tokens)}</b><em>${int(S.totals.requests)} chamadas</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#e3a33f"></i>cache</span><b>${pct(S.totals.cacheHit)}</b><em>${compact(S.totals.cached)} reaproveitados</em></div>
+        <div class="w-kpi"><span class="k-label"><i style="background:#8b7ad4"></i>diagnósticos revisados</span><b>${state.reviewed.size}/${(S.errors || []).length}</b><em>abertos no radar</em></div>
+      </div>
+      <div class="w-grid three">
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Linha do tempo</h3><p>o que entrou em cada versão</p></div><span class="pill info">v0.1</span></div>
+          <div class="tl-list">${CHANGELOG.map((c) => `<div class="tl-item${c.now ? "" : " old"}"><div class="tl-date">${esc(c.date)}</div><div class="tl-pin"><i></i></div><div class="tl-content"><b>${esc(c.title)}</b><span>${esc(c.text)}</span></div></div>`).join("")}</div>
+        </div>
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Seu nível</h3><p>progresso local</p></div><span class="pill">${lv.level}</span></div>
+          <div class="proj-read" style="margin-bottom:10px"><b>${lv.level}</b><span>${esc(lv.name)} · ${int(xp.xp)} / ${int(lv.next)} XP</span></div>
+          <div class="w-bar" style="height:8px"><i style="width:${lv.progress}%;--bc:#e3a33f"></i></div>
+          <div class="proj-line" style="margin-top:10px"><span>Próximo nível</span><b style="font-size:10px">${int(Math.max(0, lv.next - xp.xp))} XP</b></div>
+          <div class="proj-line"><span>XP de hoje</span><b style="font-size:10px">+${xp.today}</b></div>
+          <div class="drw-note" style="margin-top:10px">Ganhe XP completando missões no Atlas, revisando diagnósticos e explorando alas. O progresso fica no seu navegador.</div>
+        </div>
+      </div>
+      <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>Conquistas</h3><p>desbloqueadas com dados reais</p></div><span class="pill">${badges.filter((b) => b.got).length} de ${badges.length}</span></div>
+        <div class="badge-grid">${badges.map((b) => `<div class="badge${b.got ? " got" : ""}"><span class="b-ico">${b.icon}</span><b>${esc(b.label)}</b><span>${b.got ? "desbloqueada" : "em progresso"}</span></div>`).join("")}</div>
+      </div>
+    `;
+  };
+
+  /* ============================================================ GUILDA */
+
+  WING_RENDERERS.guilda = () => {
+    const S = state.snap;
+    const votes = state.votes || {};
+    const totalVotes = Object.values(votes).reduce((a, b) => a + (Number(b) || 0), 0);
+    return `
+      <div class="w-hero">
+        <div class="big">0<small> dados na nuvem</small></div>
+        <div class="copy"><b>Comunidade sem intermediário · ${Object.keys(votes).filter((k) => votes[k] > 0).length} apoios locais</b><p>O Rune nasce local-first. A comunidade vive no GitHub — Issues, Discussions e Wiki — e nenhum dado da sua operação precisa sair da máquina para participar. Esta ala é o ensaio do que será publicado.</p></div>
+        <div class="side"><button class="btn ghost" data-act="copy-report">Copiar release</button><button class="btn primary" data-act="export-json">Exportar snapshot</button></div>
+      </div>
+      <div class="guild-grid">
+        <div class="guild-cta">
+          <span class="eyebrow" style="font-size:8px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#2f8060">próximo capítulo</span>
+          <h3>Abra o Rune com a comunidade.</h3>
+          <p>O repositório será publicado com o núcleo local, o Manual da Frota e os coletores. Issues para bugs, Discussions para ideias e Wiki para manuais de cada IA. O login GitHub será opcional e nunca vai ler seus dados locais.</p>
+          <div class="row"><button class="btn primary" data-act="ask" data-q="Como contribuir com o Rune e o que publicar primeiro?">Como contribuir</button><button class="btn ghost" data-act="copy-diag">Copiar diagnóstico</button><button class="btn ghost" data-act="export-json">Exportar</button></div>
+          <div class="drw-note" style="margin-top:2px">${totalVotes ? `${totalVotes} apoio${totalVotes > 1 ? "s" : ""} registrado${totalVotes > 1 ? "s" : ""} neste navegador.` : "Ainda sem apoios neste navegador. Vote no roadmap abaixo."}</div>
+        </div>
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Roadmap votável</h3><p>o que entra depois da fundação</p></div><span class="pill">${ROADMAP.length} itens</span></div>
+          ${ROADMAP.map((r) => {
+            const v = Number(votes[r.key] || 0);
+            return `<div class="road-item"><div class="road-main"><b>${esc(r.title)}</b><span>${esc(r.sub)}</span></div><span class="tag-mini ${r.status === "feito" ? "ok" : r.status === "próximo" ? "warn" : ""}">${esc(r.status)}</span><button class="vote${v ? " on" : ""}" data-act="vote" data-key="${esc(r.key)}" title="Apoiar ${esc(r.title)}">▲ ${v}</button></div>`;
+          }).join("")}
+        </div>
+      </div>
+      <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>Como a Guilda funciona</h3><p>três caminhos, nenhum obrigatório</p></div></div>
+        <div class="w-subgrid">
+          <div class="w-mini"><span>issues</span><b>bugs</b><em>erro reproduzível + snapshot derivado</em></div>
+          <div class="w-mini"><span>discussions</span><b>ideias</b><em>manuais, decisores e integrações</em></div>
+          <div class="w-mini"><span>wiki</span><b>manuais</b><em>uma página por IA e por fonte de dados</em></div>
+        </div>
+        <div class="drw-note">O diagnóstico copiado não contém chaves, tokens ou trechos de código. Você escolhe o que compartilhar.</div>
+      </div>
+    `;
+  };
+
+  /* ============================================================ PERFIL */
+
+  WING_RENDERERS.perfil = () => {
+    const S = state.snap;
+    const keys = connectedKeys();
+    const xp = xpTotals();
+    const lv = levelFor(xp.xp);
+    const sources = S.meta.sources || [];
+    return `
+      <div class="profile-grid">
+        <div class="profile-card">
+          <div class="profile-id"><span class="profile-avatar">${esc(operatorName().slice(0, 1).toUpperCase())}</span><div><b>${esc(operatorName())}</b><span>operador local · ${esc(S.meta.now_label)}</span></div></div>
+          <div class="profile-stats">
+            <div><span>nível</span><b>${lv.level} · ${esc(lv.name)}</b></div>
+            <div><span>XP</span><b>${int(xp.xp)}</b></div>
+            <div><span>dias ativos</span><b>${int(S.totals.activeDays)}</b></div>
+            <div><span>sessões</span><b>${int(S.qoder?.sessions?.length || 0)}</b></div>
+          </div>
+          <div class="drw-note" style="margin-top:11px">Perfil local. Não há conta, senha ou login. O identificador serve só para a gamificação desta máquina.</div>
+          <div class="drw-actions"><button class="btn primary" data-act="export-json">Exportar JSON</button><button class="btn ghost" data-act="copy-diag">Copiar diagnóstico</button></div>
+        </div>
+        <div class="profile-card">
+          <div class="w-card-head"><div><h3>Conexões da frota</h3><p>${keys.length} provedores · nenhuma credencial exibida</p></div><span class="pill">9router</span></div>
+          <div class="w-table">
+            ${keys.map((k) => {
+              const c = connFor(k);
+              const st = providerStatus(k);
+              return `<div class="w-row" style="grid-template-columns:minmax(0,1fr) 90px 110px 80px"><span class="r-main"><b>${esc(provName(k))}</b><span>${esc(c?.auth || "—")} · ${esc(maskEmail(c?.name || "—"))}</span></span><span class="tag-mini ${st.cls}">${esc(st.text)}</span><span class="num" style="font-size:8px;font-family:Inter,sans-serif;font-weight:500;color:#8aa0a9">${esc(c?.plan || "—")}</span><span class="num" style="font-size:8px;font-family:Inter,sans-serif;font-weight:500;color:#8aa0a9">${c?.expiresAt ? `expira ${until(c.expiresAt)}` : "—"}</span></div>`;
+            }).join("")}
+          </div>
+        </div>
+      </div>
+      <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>${esc(tr("settings.title"))}</h3><p>${esc(tr("settings.currencySub"))}</p></div><button class="btn ghost" data-act="settings">${esc(tr("common.configure"))}</button></div>
+        <div class="drw-line"><span>${esc(tr("perfil.operator"))}</span><b><input class="op-input" id="operatorInput" maxlength="24" value="${esc(operatorName())}" aria-label="${esc(tr("perfil.operator"))}"></b></div>
+        <div class="drw-line"><span>${esc(tr("perfil.language"))}</span><b>${esc((I18N?.languages || []).find((l) => l.code === state.lang)?.label || state.lang)}</b></div>
+        <div class="drw-line"><span>${esc(tr("perfil.currency"))}</span><b>${esc(CURRENCIES[state.currency])} · ${esc(state.currency)}</b></div>
+        <div class="drw-line"><span>${esc(tr("perfil.rates"))}</span><b>USD ${Number(state.rates.USD || 0).toFixed(2)} · EUR ${Number(state.rates.EUR || 0).toFixed(2)}</b></div>
+      </div>
+      <div class="w-card sec-card" id="secBox" style="margin-top:12px">${securityBody()}</div>
+      <div class="w-grid" style="margin-top:12px">
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Fontes locais</h3><p>somente leitura · caminhos reais</p></div><span class="pill info">${sources.length}</span></div>
+          <div class="src-list">${sources.map((s) => `<div class="src-row"><span class="src-dot ${s.status === "ok" ? "" : "stale"}"></span><span class="src-main"><b>${esc(s.label)}</b><span>${esc(shortPath(s.path))}</span></span><span class="tag-mini ${s.status === "ok" ? "ok" : "warn"}">${esc(s.status)}</span></div>`).join("")}</div>
+          <div class="drw-note">O servidor abre os bancos em modo somente-leitura e escuta apenas em 127.0.0.1.</div>
+        </div>
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Privacidade</h3><p>o contrato do Rune</p></div><span class="pill ok">local</span></div>
+          <div class="privacy-list">${(S.meta.privacy || []).map((p) => `<div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg><span>${esc(p)}</span></div>`).join("")}</div>
+        </div>
+      </div>
+      <div class="w-grid" style="margin-top:12px">
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Chaves do 9router</h3><p>somente identificadores mascarados</p></div><span class="pill">${(S.keys || []).length}</span></div>
+          ${(S.keys || []).map((k) => `<div class="key-row"><span class="tag-mini ${k.active ? "ok" : "warn"}">${k.active ? "ativa" : "off"}</span><span class="key-code">${esc(k.keyId)}••••</span><span class="tag-mini ${k.restricted ? "warn" : ""}">${k.restricted ? "restrita" : "livre"}</span><span class="num" style="margin-left:auto;font-size:9px">${esc(k.name)}</span></div>`).join("") || `<div class="w-empty">Nenhuma chave.</div>`}
+          <div class="drw-note">O valor completo da chave nunca é lido pela interface. O 9router continua exigindo a chave para proteger a exposição via túnel.</div>
+        </div>
+        <div class="w-card">
+          <div class="w-card-head"><div><h3>Atalhos</h3><p>navegue sem mouse</p></div></div>
+          <div class="shortcut-grid">${[["Busca global", "⌘K"], ["Atualizar dados", "R"], ["Alternar luz", "D"], ["Tour guiado", "?"], ["Alas 1–9", "1…9"], ["Fechar camada", "esc"]].map(([a, b]) => `<div class="shortcut"><span>${a}</span><kbd>${b}</kbd></div>`).join("")}</div>
+        </div>
+      </div>
+    `;
+  };
+
+  /* ============================================================ AJUDA */
+
+  WING_RENDERERS.ajuda = () => {
+    const S = state.snap;
+    const errors = S.errors || [];
+    const reviewed = errors.filter((e) => state.reviewed.has(`${e.provider}|${e.model}|${e.diagnosis?.title}`)).length;
+    return `
+      <div class="w-hero">
+        <div class="big">${errors.length}<small> diagnósticos</small></div>
+        <div class="copy"><b>${reviewed} revisados · ${errors.reduce((a, e) => a + (e.count || 0), 0)} ocorrências</b><p>Cada erro já vem com causa provável, correção sugerida e um prompt pronto para colar na sua IA preferida. O prompt não inclui chave, token OAuth ou trecho de código.</p></div>
+        <div class="side"><button class="btn ghost" data-act="copy-diag">Copiar diagnóstico</button><button class="btn primary" data-act="open-url" data-url="${esc(S.router.links?.find((l) => l.label === "Abrir 9router")?.url || "")}">Abrir 9router</button></div>
+      </div>
+      <div class="fleet-grid">
+        ${errors.length ? errors.map((e, i) => {
+          const isReviewed = state.reviewed.has(`${e.provider}|${e.model}|${e.diagnosis?.title}`);
+          const tone = e.diagnosis?.tone === "bad" ? "#d8584a" : "#e3a33f";
+          return `<article class="help-card" style="border-left:3px solid ${tone}">
+            <div class="w-card-head"><div><h3>${esc(e.diagnosis?.title || "Erro")}</h3><p>${esc(provName(e.provider))} · ${esc(e.model || "—")} · ${e.count}× · ${esc(rel(e.last))}</p></div><span class="tag-mini ${isReviewed ? "ok" : "bad"}">${isReviewed ? "revisado" : "aberto"}</span></div>
+            <p style="font-family:JetBrains Mono,monospace;font-size:8px;line-height:1.5;background:rgba(30,70,84,.04);padding:7px 9px;border-radius:7px;margin-bottom:8px;max-height:52px;overflow:hidden">${esc(e.message)}</p>
+            <div class="why"><b>Causa provável:</b> ${esc(e.diagnosis?.cause || "—")}<br><b>Correção:</b> ${esc(e.diagnosis?.fix || "—")}</div>
+            <div class="drw-actions"><button class="btn primary" data-act="error-copy" data-i="${i}">Copiar prompt</button><button class="btn ghost" data-act="error-detail" data-i="${i}">Detalhes</button></div>
+          </article>`;
+        }).join("") : `<div class="w-card"><div class="w-empty">Nenhum erro no período. O céu está limpo.</div></div>`}
+      </div>
+      <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>Como o Rune diagnostica</h3><p>regras locais sobre a mensagem normalizada</p></div><span class="pill info">sem IA na nuvem</span></div>
+        <div class="w-subgrid">
+          <div class="w-mini"><span>1 · normalizar</span><b>mensagem</b><em>status HTTP + erro aninhado + código do provedor</em></div>
+          <div class="w-mini"><span>2 · classificar</span><b>causa</b><em>credencial, cota, modelo aposentado, rota ou falha do provedor</em></div>
+          <div class="w-mini"><span>3 · prescrever</span><b>ação</b><em>correção segura + fallback + o que monitorar</em></div>
+        </div>
+        <div class="drw-note">Se a causa não estiver nas regras, o prompt pronto leva o contexto para a sua IA preferida. Nada é enviado automaticamente.</div>
+      </div>
+    `;
+  };
+
+  /* ============================================================ bindings das alas */
+
+  function bindWing(key) {
+    if (key === "perfil") {
+      loadSecurity();
+      const op = $("#operatorInput");
+      if (op) {
+        op.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); op.blur(); } });
+        op.addEventListener("change", () => {
+          const value = op.value.trim().slice(0, 24);
+          state.operator = value;
+          store.set("operator", value);
+          renderHero();
+          const name = $(".profile-id b");
+          if (name) name.textContent = operatorName();
+          toast(tr("perfil.operatorSaved"));
+        });
+      }
+    }
+    if (key === "sessoes") {
+      const input = $("#sessionSearch");
+      if (input) {
+        input.value = state.sessionQuery;
+        input.addEventListener("input", () => {
+          state.sessionQuery = input.value;
+          filterSessionRows();
+        });
+      }
+    }
+    if (key === "oraculo") {
+      const input = $("#chatInput");
+      if (input) {
+        input.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            sendChat(input.value);
+          }
+        });
+      }
+      renderChat();
+    }
+  }
+
+  function filterSessionRows() {
+    const q = nkey(state.sessionQuery).trim();
+    let shown = 0;
+    $$("[data-session-row]").forEach((el) => {
+      const on = !q || nkey(el.dataset.search || "").includes(q);
+      el.hidden = !on;
+      if (on) shown += 1;
+    });
+    const count = $("#sessionCount");
+    const total = state.snap?.qoder?.sessions?.length || 0;
+    if (count) count.textContent = `${shown} de ${total}`;
+  }
+
+  function setProjection(days) {
+    const next = [7, 14, 30].includes(Number(days)) ? Number(days) : 7;
+    state.projectionDays = next;
+    if (state.wing === "fluxo") {
+      renderWing("fluxo", { preserve: true });
+      toast(`Projeção ajustada para ${next} dias`);
+    } else {
+      openWing("fluxo");
+    }
+  }
+
+  function vote(key) {
+    if (!ROADMAP.some((r) => r.key === key)) return;
+    state.votes[key] = Number(state.votes[key] || 0) + 1;
+    store.set("votes", state.votes);
+    if (state.wing === "guilda") renderWing("guilda", { preserve: true });
+    const item = ROADMAP.find((r) => r.key === key);
+    toast(`Apoio registrado · ${item.title}`);
+  }
+
+  act("manual-task", (el) => {
+    state.manualTask = el.dataset.key || "code";
+    if (state.wing === "biblioteca") renderWing("biblioteca", { preserve: true });
+  });
+  act("session-sort", (el) => {
+    state.sessionSort = el.dataset.key || "context";
+    if (state.wing === "sessoes") renderWing("sessoes", { preserve: true });
+  });
+  act("chat-send", () => {
+    const input = $("#chatInput");
+    if (input) sendChat(input.value);
+  });
+
+  /* ---------------------------------------------------------- go */
+
+  boot();
+})();

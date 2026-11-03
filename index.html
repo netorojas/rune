@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rune · Atlas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="holder" id="holder">
+  <div class="stage" id="stage">
+    <div class="app" id="app" data-light="day" data-focus="">
+
+      <div class="scene">
+        <div class="sky-img" id="skyImg"></div>
+        <div class="sky-wash"></div>
+        <div class="clouds">
+          <div class="cloud c1"></div>
+          <div class="cloud c2"></div>
+          <div class="cloud c3"></div>
+          <div class="cloud c4"></div>
+        </div>
+        <div class="birds" aria-hidden="true">
+          <svg viewBox="0 0 120 40" fill="none" stroke="#356b78" stroke-width="1.4" stroke-linecap="round">
+            <path d="M6 18c4-5 8-5 12 0 4-5 8-5 12 0" opacity=".7"/>
+            <path d="M46 10c3-4 6-4 9 0 3-4 6-4 9 0" opacity=".55"/>
+            <path d="M76 24c2.5-3 5-3 7.5 0 2.5-3 5-3 7.5 0" opacity=".4"/>
+          </svg>
+        </div>
+        <div class="stars" id="stars"></div>
+        <div class="sky-aurora"></div>
+        <div class="dusk-overlay"></div>
+        <div class="vignette"></div>
+      </div>
+
+      <canvas id="sceneFx" width="1440" height="900" aria-hidden="true"></canvas>
+
+      <div class="sun-wrap" id="sunGauge" role="button" tabindex="0" aria-label="Folga do período">
+        <div class="sun-halo"></div>
+        <div class="sun-rays"></div>
+        <svg class="ring-svg" viewBox="0 0 200 200" aria-hidden="true">
+          <circle class="ring-track" cx="100" cy="100" r="82"/>
+          <circle class="ring-fill" id="ringFill" cx="100" cy="100" r="82" transform="rotate(-90 100 100)"/>
+        </svg>
+        <div class="sun-disc">
+          <span class="sun-eyebrow" id="sunEyebrow">FOLGA · CODEX</span>
+          <strong class="sun-pct" id="sunPct">68<span>%</span></strong>
+          <span class="sun-sub" id="sunSub">3,4 dias</span>
+        </div>
+        <div class="sun-tag" id="sunTag">ritmo 8,8%/dia · meta 20,3%/dia</div>
+      </div>
+
+      <header class="topbar">
+        <button class="brand" id="brandBtn" title="Voltar ao Atlas">
+          <span class="brand-mark">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3.2l7.4 4.3v9L12 20.8l-7.4-4.3v-9L12 3.2z" stroke="#fff" stroke-width="1.5" stroke-linejoin="round" opacity=".92"/>
+              <path d="M12 7.1l4.2 7.4H7.8L12 7.1z" stroke="#fff" stroke-width="1.3" stroke-linejoin="round" opacity=".86"/>
+              <circle cx="12" cy="16.2" r="1" fill="#fff"/>
+            </svg>
+          </span>
+          <span class="brand-name">rune<span>.</span></span>
+          <span class="brand-chip" id="brandChip">atlas</span>
+        </button>
+
+        <div class="crumb">
+          <span class="crumb-root" id="crumbRoot">Rune</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
+          <b id="crumbNow">Atlas</b>
+        </div>
+
+        <span class="live-pill" id="livePill"><i></i><span id="liveLabel">ao vivo</span></span>
+
+        <div class="top-actions">
+          <button class="icon-btn" id="guideBtn" title="Como usar" aria-label="Como usar o Rune">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 016.5 3H20v16H6.5A2.5 2.5 0 004 21V5.5z"/><path d="M4 18.5A2.5 2.5 0 016.5 16H20"/><path d="M9 7.5h6"/></svg>
+          </button>
+          <button class="icon-btn" id="refreshBtn" title="Atualizar dados (R)" aria-label="Atualizar dados">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+          </button>
+          <button class="search-btn" id="searchBtn" aria-label="Busca global">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+            <span data-i18n="topbar.search">Buscar</span><kbd>⌘K</kbd>
+          </button>
+          <button class="light-toggle" id="lightToggle" aria-label="Alternar iluminação">
+            <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="#c08a22" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/></svg>
+            <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="#6c7fae" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.4A8 8 0 019.6 4 8 8 0 1020 14.4z"/></svg>
+            <span id="lightLabel">Dia</span>
+          </button>
+          <div class="streak" id="streak" title="Dias ativos monitorados">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2.8c.7 3.2-1.9 4.7-1.9 7.1 0 1.2.7 2.1 1.7 2.5-.2-1.9.7-3.2 2-4.1 1.9 1.8 3.4 3.9 3.4 6.3a5.2 5.2 0 01-10.4 0c0-3.3 3-4.6 3-7.3 0-1.7.9-3.2 2.2-4.5z" fill="#e8a12d"/><path d="M12 12.4c1.2 1.1 1.9 2.2 1.9 3.5a1.9 1.9 0 11-3.8 0c0-1.2.8-2.3 1.9-3.5z" fill="#ffe3a3"/></svg>
+            <b id="streakVal">4</b><small data-i18n="common.days">dias</small>
+          </div>
+          <button class="locale-btn" id="localeBtn" title="Idioma e moeda" aria-label="Idioma e moeda">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.3 3.5 5.2 3.5 8.5s-1.2 6.2-3.5 8.5c-2.3-2.3-3.5-5.2-3.5-8.5S9.7 5.8 12 3.5z"/></svg>
+            <span id="localeLabel">PT · R$</span>
+          </button>
+          <button class="avatar" id="avatarBtn" title="Perfil" aria-label="Abrir perfil">N<span class="lvl" id="lvlBadge">7</span></button>
+        </div>
+      </header>
+
+      <aside class="rail" aria-label="Alas do Rune">
+        <span class="rail-glow"></span>
+        <button class="rail-btn active" data-wing="atlas" data-label="Atlas" title="Atlas · visão geral">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7.5"/><path d="M15.5 8.5l-2 5-5 2 2-5 5-2z"/></svg>
+        </button>
+        <button class="rail-btn" data-wing="fluxo" data-label="Fluxo" title="Fluxo · consumo e projeção">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15c3-6 5-6 8 0s5 6 8 0"/><path d="M3 9c3-4 5-4 8 0s5 4 8 0" opacity=".5"/></svg>
+        </button>
+        <button class="rail-btn" data-wing="sessoes" data-label="Sessões" title="Sessões · chamadas e diagnósticos">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h9"/><circle cx="3" cy="7" r=".8" fill="currentColor"/><circle cx="3" cy="12" r=".8" fill="currentColor"/><circle cx="3" cy="17" r=".8" fill="currentColor"/></svg>
+        </button>
+        <button class="rail-btn" data-wing="oficina" data-label="Oficina" title="Oficina · skills, artefatos e desperdício">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5l4 4-9.5 9.5H5v-4l9.5-9.5z"/><path d="M12 8l4 4"/><path d="M4 20h5"/></svg>
+        </button>
+        <button class="rail-btn" data-wing="oraculo" data-label="Oráculo" title="Oráculo · assistente local">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3z"/><path d="M18.8 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z"/></svg>
+        </button>
+        <button class="rail-btn" data-wing="biblioteca" data-label="Biblioteca" title="Biblioteca · wiki de IAs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 016.5 3H20v16H6.5A2.5 2.5 0 004 21V5.5z"/><path d="M4 18.5A2.5 2.5 0 016.5 16H20"/><path d="M8 7h8M8 11h6"/></svg>
+        </button>
+        <button class="rail-btn" data-wing="diario" data-label="Diário" title="Diário · changelog e conquistas">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11l3 3v13H5z"/><path d="M9 9h7M9 13h7M9 17h4"/></svg>
+        </button>
+        <button class="rail-btn" data-wing="guilda" data-label="Guilda" title="Guilda · comunidade e roadmap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V9l8-5 8 5v11"/><path d="M4 20h16"/><path d="M9 20v-6h6v6"/><path d="M12 4v3"/></svg>
+        </button>
+        <button class="rail-btn" data-wing="perfil" data-label="Perfil" title="Perfil · conexões e privacidade">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c.8-3.4 3.5-5.2 7-5.2s6.2 1.8 7 5.2"/></svg>
+        </button>
+        <span class="rail-sep"></span>
+        <button class="rail-btn" data-wing="ajuda" data-label="Ajuda" title="Ajuda · contato e diagnóstico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.2a2.6 2.6 0 015 1.1c0 1.7-2.6 1.9-2.6 3.5"/><circle cx="12" cy="17.2" r=".9" fill="currentColor"/></svg>
+        </button>
+        <button class="rail-btn rail-xp" id="railXp" data-label="Progresso" title="Seu progresso">
+          <span class="xp-ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="rgba(30,70,84,.12)" stroke-width="3"/><circle id="xpRing" cx="18" cy="18" r="15" fill="none" stroke="#e3a63e" stroke-width="3" stroke-linecap="round" stroke-dasharray="94.2" stroke-dashoffset="40" transform="rotate(-90 18 18)"/></svg><b id="railLvl">7</b></span>
+        </button>
+      </aside>
+
+      <main class="dashboard">
+        <section class="hero" id="hero">
+          <div class="hero-copy">
+            <div class="hero-strip">
+              <span class="hero-pill" id="heroPill"><i class="dot-live"></i> terça, 3 nov · modo local</span>
+              <div class="hero-chips">
+                <button class="chip chip-start" id="startChip" data-i18n="onboarding.title">Comece aqui</button>
+                <button class="chip" id="chipLive"><i class="dot-live"></i><span id="chipLiveText">coleta há 2 min</span></button>
+                <button class="chip" id="chipProviders">3 provedores medindo</button>
+                <button class="chip chip-xp" id="chipXp">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.4 6.9H21l-5.3 4 2 6.9-5.7-4.3-5.7 4.3 2-6.9-5.3-4h6.6L12 2z"/></svg>
+                  <span id="chipXpText">+240 XP esta semana</span>
+                </button>
+                <button class="chip chip-time" id="timeChip" hidden><i></i><span id="timeChipText"></span><b>voltar ao agora</b></button>
+              </div>
+            </div>
+            <h1 id="heroTitle">Bom dia<span>.</span></h1>
+            <p id="heroText">Seu céu está limpo. A semana ainda tem <b>68% de folga</b> e o ritmo está sob controle.</p>
+          </div>
+          <div class="today-cluster" aria-label="Resumo de hoje">
+            <div class="tc-main">
+              <div>
+                <span id="tcLabel">hoje · tokens</span>
+                <div class="tc-big" id="tcTokens">0<small>tokens</small></div>
+              </div>
+              <span class="tc-delta" id="tcDelta">—</span>
+            </div>
+            <div class="tc-item"><em data-i18n="common.cost">custo</em><b id="tcCost">—</b></div>
+            <div class="tc-item"><em data-i18n="common.calls">chamadas</em><b id="tcReqs">—</b></div>
+            <div class="tc-item"><em data-i18n="common.cache">cache</em><b id="tcCache">—</b></div>
+            <div class="tc-item"><em data-i18n="common.model">modelo top</em><b id="tcModel">—</b></div>
+          </div>
+        </section>
+
+        <section class="fleet" id="fleet" aria-label="Provedores conectados"></section>
+
+        <section class="card chart-card">
+          <div class="card-head">
+            <div>
+              <h2 id="chartTitle">Hoje, hora a hora</h2>
+              <p id="chartSub">carregando dados locais…</p>
+            </div>
+            <div class="chart-controls">
+              <div class="seg" id="chartSeg">
+                <button class="sel" data-mode="today" data-i18n="common.today">Hoje</button>
+                <button data-mode="days" data-i18n="common.days">Dias</button>
+              </div>
+              <button class="mini-icon" id="chartExpand" title="Expandir no Fluxo" aria-label="Expandir no Fluxo">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <svg id="chart" viewBox="0 0 612 178" aria-label="Consumo de tokens por hora"></svg>
+          </div>
+          <div class="timeline" id="timeline" aria-label="Linha do tempo dos últimos 7 dias"></div>
+        </section>
+
+        <section class="card quests-card">
+          <div class="card-head">
+            <div><h2 data-i18n="atlas.quests">Missões de hoje</h2><p id="questSub" data-i18n="atlas.questsSub">metas calculadas com dados reais</p></div>
+            <span class="xp-chip" id="xpChip">240 XP</span>
+          </div>
+          <div class="quests" id="quests"></div>
+          <div class="level">
+            <div class="level-top"><b id="levelName">Nível 7 · Explorador</b><span id="xpVal">240 / 400 XP</span></div>
+            <div class="level-bar"><i id="xpBar" style="width:60%"></i></div>
+          </div>
+        </section>
+
+        <section class="card live-card" aria-label="Chamadas ao vivo">
+          <div class="card-head">
+            <div><h2 data-i18n="atlas.live">Chamadas ao vivo</h2><p id="liveSub">últimas requisições locais</p></div>
+            <button class="mini-link" id="liveMore" data-i18n="common.viewAll">ver todas</button>
+          </div>
+          <div class="feed" id="feed"></div>
+        </section>
+
+        <section class="card radar-card" aria-label="Radar de risco">
+          <div class="card-head">
+            <div><h2 data-i18n="atlas.radar">Radar</h2><p id="radarSub" data-i18n="atlas.radarSub">riscos e oportunidades</p></div>
+            <span class="radar-count" id="radarCount">0</span>
+          </div>
+          <div class="radar" id="radar"></div>
+        </section>
+      </main>
+
+      <aside class="cockpit" aria-label="Cockpit de controle">
+        <div class="cockpit-head">
+          <div>
+            <span class="eyebrow">COCKPIT</span>
+            <h2 id="cockpitTitle">Agora</h2>
+          </div>
+          <span class="live-badge"><i></i><span id="cockpitLive">ao vivo</span></span>
+        </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="agora" role="tab" aria-selected="true" data-i18n="cockpit.now">Agora</button>
+          <button class="tab" data-tab="provedores" role="tab" aria-selected="false" data-i18n="cockpit.providers">Provedores</button>
+          <button class="tab" data-tab="erros" role="tab" aria-selected="false" data-i18n="cockpit.errors">Erros</button>
+          <button class="tab" data-tab="dicas" role="tab" aria-selected="false" data-i18n="cockpit.tips">Dicas</button>
+        </div>
+        <div class="panes" id="panes"></div>
+      </aside>
+
+      <div class="pip" id="pipCompanion" role="button" tabindex="0" aria-label="Pip — abrir assistente">
+        <span class="pip-tip" id="pipTip">Sua folga está em 68%. Quer um plano de 3 ações?</span>
+        <span class="pip-spark" aria-hidden="true">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z"/></svg>
+        </span>
+        <div class="pip-inner">
+          <svg viewBox="0 0 64 64" width="62" height="62" aria-hidden="true">
+            <ellipse cx="32" cy="57" rx="15" ry="3.4" fill="rgba(20,60,70,.17)"/>
+            <path d="M32 11c2.6-5.4 7.8-6.6 10.8-5.6-.7 3.8-1.9 7.1-6.2 9.1z" fill="#4caf78"/>
+            <circle cx="32" cy="34" r="18.5" fill="url(#pipBody)"/>
+            <circle cx="32" cy="34" r="18.5" fill="none" stroke="#7fc99a" stroke-width="1"/>
+            <ellipse cx="32" cy="40" rx="11.5" ry="8.5" fill="#e9f8ec" opacity=".85"/>
+            <circle cx="25.6" cy="32" r="2.5" fill="#1f3b46"/>
+            <circle cx="38.4" cy="32" r="2.5" fill="#1f3b46"/>
+            <circle cx="26.4" cy="31.2" r=".8" fill="#fff"/>
+            <circle cx="39.2" cy="31.2" r=".8" fill="#fff"/>
+            <circle cx="21.4" cy="37" r="2.7" fill="#f3a4a4" opacity=".55"/>
+            <circle cx="42.6" cy="37" r="2.7" fill="#f3a4a4" opacity=".55"/>
+            <path d="M28.8 38.8c1.8 1.5 4.6 1.5 6.4 0" stroke="#1f3b46" stroke-width="1.3" stroke-linecap="round"/>
+            <path d="M15 33c-2.4 1-3.4 3.2-3 5.4M49 33c2.4 1 3.4 3.2 3 5.4" stroke="#7fc99a" stroke-width="1.8" stroke-linecap="round"/>
+            <defs>
+              <radialGradient id="pipBody" cx="35%" cy="28%" r="78%">
+                <stop offset="0" stop-color="#e3f8e8"/><stop offset="60%" stop-color="#b9e7c7"/><stop offset="100%" stop-color="#93d3a9"/>
+              </radialGradient>
+            </defs>
+          </svg>
+        </div>
+      </div>
+
+      <footer class="ticker">
+        <span class="ticker-label">PULSO</span>
+        <div class="ticker-track"><div class="ticker-row" id="tickerRow"></div></div>
+        <span class="ticker-hint" id="tickerHint">v0.1 · local</span>
+      </footer>
+
+      <div class="wing" id="wing" hidden>
+        <div class="wing-backdrop" id="wingBackdrop"></div>
+        <div class="wing-sheet" role="dialog" aria-modal="true" aria-labelledby="wingTitle">
+          <header class="wing-head">
+            <button class="wing-back" id="wingBack" aria-label="Voltar ao Atlas">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+            <span class="wing-icon" id="wingIcon"></span>
+            <div class="wing-titles"><span class="eyebrow" id="wingEyebrow">ALA</span><h2 id="wingTitle">Fluxo</h2><p id="wingSub"></p></div>
+            <div class="wing-actions" id="wingActions"></div>
+            <button class="wing-close" id="wingClose" aria-label="Fechar">×</button>
+          </header>
+          <div class="wing-body" id="wingBody"></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer" hidden aria-hidden="true">
+        <div class="drawer-scrim" id="drawerScrim"></div>
+        <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+          <button class="drawer-close" id="drawerClose" aria-label="Fechar">×</button>
+          <div id="drawerBody"></div>
+        </aside>
+      </div>
+
+      <div class="palette" id="palette" hidden>
+        <div class="palette-scrim" id="paletteScrim"></div>
+        <div class="palette-box" role="dialog" aria-modal="true" aria-label="Busca global">
+          <div class="palette-input">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+            <input id="paletteInput" placeholder="Busque uma ala, provedor, projeto, modelo ou ação…" autocomplete="off" aria-label="Busca global">
+            <kbd>esc</kbd>
+          </div>
+          <div class="palette-results" id="paletteResults"></div>
+          <div class="palette-foot"><span>↑↓ navegar</span><span>↵ abrir</span><span>⌘K fechar</span></div>
+        </div>
+      </div>
+
+      <div class="tour" id="tour" hidden>
+        <div class="tour-scrim"></div>
+        <div class="tour-card">
+          <span class="eyebrow" id="tourStep">TOUR · 1/6</span>
+          <h3 id="tourTitle">Este é o seu céu</h3>
+          <p id="tourText">Cada elemento do Atlas é um dado real da sua operação.</p>
+          <div class="tour-actions">
+            <button class="ghost" id="tourSkip">Pular</button>
+            <button class="primary" id="tourNext">Próximo</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toasts" id="toasts" aria-live="polite"></div>
+      <div class="confetti" id="confetti" aria-hidden="true"></div>
+    </div>
+  </div>
+</div>
+<script src="/i18n.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
