@@ -38,21 +38,6 @@
 
       <canvas id="sceneFx" width="1440" height="900" aria-hidden="true"></canvas>
 
-      <div class="sun-wrap" id="sunGauge" role="button" tabindex="0" aria-label="Folga do período">
-        <div class="sun-halo"></div>
-        <div class="sun-rays"></div>
-        <svg class="ring-svg" viewBox="0 0 200 200" aria-hidden="true">
-          <circle class="ring-track" cx="100" cy="100" r="82"/>
-          <circle class="ring-fill" id="ringFill" cx="100" cy="100" r="82" transform="rotate(-90 100 100)"/>
-        </svg>
-        <div class="sun-disc">
-          <span class="sun-eyebrow" id="sunEyebrow">FOLGA · CODEX</span>
-          <strong class="sun-pct" id="sunPct">68<span>%</span></strong>
-          <span class="sun-sub" id="sunSub">3,4 dias</span>
-        </div>
-        <div class="sun-tag" id="sunTag">ritmo 8,8%/dia · meta 20,3%/dia</div>
-      </div>
-
       <header class="topbar">
         <button class="brand" id="brandBtn" title="Voltar ao Atlas">
           <span class="brand-mark">
@@ -136,7 +121,8 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.2a2.6 2.6 0 015 1.1c0 1.7-2.6 1.9-2.6 3.5"/><circle cx="12" cy="17.2" r=".9" fill="currentColor"/></svg>
         </button>
         <button class="rail-btn rail-xp" id="railXp" data-label="Progresso" title="Seu progresso">
-          <span class="xp-ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="rgba(30,70,84,.12)" stroke-width="3"/><circle id="xpRing" cx="18" cy="18" r="15" fill="none" stroke="#e3a63e" stroke-width="3" stroke-linecap="round" stroke-dasharray="94.2" stroke-dashoffset="40" transform="rotate(-90 18 18)"/></svg><b id="railLvl">7</b></span>
+          <span class="xp-ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="rgba(30,70,84,.12)" stroke-width="3"/><circle id="xpRing" cx="18" cy="18" r="15" fill="none" stroke="#47630f" stroke-width="3" stroke-linecap="round" stroke-dasharray="94.2" stroke-dashoffset="40" transform="rotate(-90 18 18)"/></svg><b id="railLvl">7</b></span>
+          <span class="rail-xp-label"><b>Nível <span id="railLvlName">7</span></b><small id="railXpText">240 / 400 XP</small></span>
         </button>
       </aside>
 
@@ -171,6 +157,23 @@
             <div class="tc-item"><em data-i18n="common.calls">chamadas</em><b id="tcReqs">—</b></div>
             <div class="tc-item"><em data-i18n="common.cache">cache</em><b id="tcCache">—</b></div>
             <div class="tc-item"><em data-i18n="common.model">modelo top</em><b id="tcModel">—</b></div>
+          </div>
+        </section>
+
+        <section class="sun-wrap" id="sunGauge" role="button" tabindex="0" aria-label="Folga do período">
+          <div class="qs-main">
+            <span class="sun-eyebrow" id="sunEyebrow">JANELA SEMANAL · CODEX</span>
+            <div class="qs-num">
+              <strong class="sun-pct" id="sunPct">68<span>%</span></strong>
+              <span class="sun-sub" id="sunSub">livre · 3,4 dias</span>
+            </div>
+          </div>
+          <div class="qs-track">
+            <div class="qs-bar"><i id="qsFill" style="width:68%"></i></div>
+            <div class="qs-foot">
+              <span class="sun-tag" id="sunTag">ritmo 8,8%/dia · meta 20,3%/dia</span>
+              <span class="qs-hint">clique para alternar</span>
+            </div>
           </div>
         </section>
 

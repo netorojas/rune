@@ -28,7 +28,7 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 
 | Área | O que você vê e faz |
 |---|---|
-| **Atlas** | Visão geral viva: céu, sol de cota, KPI, frota, linha do tempo e alertas clicáveis. |
+| **Atlas** | Visão geral viva: faixa de cota Codex/Claude, KPIs, frota de provedores, consumo por hora, missões, radar de risco e chamadas ao vivo. |
 | **Fluxo** | Consumo por dia/hora, projeção do mês, orçamento global e por provedor. |
 | **Sessões** | Chamadas recentes, projetos, latência, status e diagnóstico por provedor. |
 | **Oficina** | Inventário de CLIs/apps, skills, artefatos e sinais de desperdício. |
@@ -61,8 +61,8 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 ### Rodar
 
 ```bash
-git clone <seu-fork>/rune-live.git
-cd rune-live
+git clone https://github.com/netorojas/rune.git
+cd rune
 ./run.sh
 ```
 
@@ -126,9 +126,9 @@ Qoder Desktop (main.sqlite)┘                              │
 
 - `server.py`: HTTP local, leitura somente-leitura dos SQLite, agregação SLO, métricas e auditoria.
 - `collector/collect.py`: coleta metadados de uso, cota, inventário e projetos.
-- `app.js`: runtime do painel, nove alas, orçamento, alertas, i18n e câmbio.
+- `app.js`: runtime do painel, dez alas, orçamento, alertas, missões/XP, i18n e câmbio.
 - `i18n.js`: dicionários PT/EN/ES.
-- `styles.css`: cena 2D, parallax, temas dia/crepúsculo e componentes.
+- `styles.css`: identidade Skyline, faixa de céu, shell responsivo, temas dia/crepúsculo e componentes.
 
 ## Segurança
 
@@ -165,8 +165,8 @@ AI costs are split across providers, models, subscriptions and keys. Rune turns 
 ### Quick start
 
 ```bash
-git clone <your-fork>/rune-live.git
-cd rune-live
+git clone https://github.com/netorojas/rune.git
+cd rune
 ./run.sh
 ```
 

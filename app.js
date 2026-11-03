@@ -349,11 +349,9 @@
   }
 
   function scaleStage() {
-    const pad = 36;
-    const scale = Math.min((window.innerWidth - pad) / 1440, (window.innerHeight - pad) / 900, 1);
-    stage.style.transform = `scale(${scale})`;
-    holder.style.width = `${1440 * scale}px`;
-    holder.style.height = `${900 * scale}px`;
+    stage.style.transform = "none";
+    holder.style.width = "100%";
+    holder.style.height = "auto";
   }
 
   async function loadSnapshot() {
@@ -548,7 +546,10 @@
     const target = Number(value) || 0;
     const from = Number(el.dataset.v || 0);
     el.dataset.v = target;
-    if (Math.abs(target - from) < 0.01) { el.innerHTML = format(target); return; }
+    if (Math.abs(target - from) < 0.01 || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      el.innerHTML = format(target);
+      return;
+    }
     const start = performance.now();
     const step = (now) => {
       const p = Math.min(1, (now - start) / duration);
@@ -589,9 +590,11 @@
     const s = states[state.sunIndex % states.length];
     const ring = $("#ringFill");
     const pctValue = clamp(s.pct, 0, 100);
-    const C = 2 * Math.PI * 82;
-    ring.style.strokeDasharray = `${(C * pctValue) / 100} ${C}`;
-    ring.style.stroke = s.provider === "claude" ? "#d97757" : s.key.includes("session") ? "#37a6c8" : "#2f9e6b";
+    if (ring) {
+      const C = 2 * Math.PI * 82;
+      ring.style.strokeDasharray = `${(C * pctValue) / 100} ${C}`;
+      ring.style.stroke = s.provider === "claude" ? "#d97757" : s.key.includes("session") ? "#37a6c8" : "#2f9e6b";
+    }
     const codexQ = state.snap?.quota?.codex;
     let eyebrow = s.eyebrow;
     let sub = s.sub;
@@ -614,6 +617,9 @@
     $("#sunSub").textContent = sub;
     $("#sunTag").textContent = tag;
     const wrap = $("#sunGauge");
+    const fill = $("#qsFill");
+    if (fill) fill.style.width = `${pctValue}%`;
+    wrap.dataset.tone = pctValue < 20 ? "bad" : pctValue < 45 ? "warn" : "ok";
     wrap.setAttribute("aria-label", tr("atlas.sunAria", { eyebrow, pct: Math.round(pctValue), tag }));
     wrap.title = `${eyebrow} · ${tag} · ${tr("common.resetIn", { v: until(s.reset) })}`;
     let dots = $(".sun-dots", wrap);
@@ -931,6 +937,10 @@
     $("#xpRing").style.strokeDashoffset = `${94.2 * (1 - lv.progress / 100)}`;
     $("#xpChip").textContent = `${today} XP hoje`;
     $("#chipXpText").textContent = `+${today} XP hoje`;
+    const railLvlName = $("#railLvlName");
+    const railXpText = $("#railXpText");
+    if (railLvlName) railLvlName.textContent = lv.level;
+    if (railXpText) railXpText.textContent = `${int(xp)} / ${int(lv.next)} XP`;
     $("#railXp").title = `Nível ${lv.level} · ${lv.name} · ${int(xp)} XP`;
   }
 
@@ -1123,7 +1133,7 @@
 
   function renderBand() {
     const S = state.snap;
-    const recent = (S.recent || []).slice(0, 4);
+    const recent = (S.recent || []).slice(0, 6);
     $("#liveSub").textContent = tr("atlas.liveSub", { n: int(S.totals.requests), ago: ago(S.meta.router_age) });
     $("#feed").innerHTML = recent.map((r) => `<div class="feed-row" style="--pc:${provColor(r.provider)}">
       <span class="feed-time">${esc(r.time)}</span>
@@ -1140,10 +1150,11 @@
     const critical = bad === 1 ? tr("atlas.criticalOne") : tr("atlas.criticalMany", { n: bad });
     const warnings = warn === 1 ? tr("atlas.warnOne") : tr("atlas.warnMany", { n: warn });
     $("#radarSub").textContent = `${critical} · ${warnings}`;
-    $("#radar").innerHTML = alerts.slice(0, 2).map((a, i) => `<button class="radar-item ${esc(a.tone)}" data-act="radar" data-i="${i}" title="${esc(a.detail)}">
+    const shown = Math.min(4, alerts.length);
+    $("#radar").innerHTML = alerts.slice(0, shown).map((a, i) => `<button class="radar-item ${esc(a.tone)}" data-act="radar" data-i="${i}" title="${esc(a.detail)}">
       <span class="radar-ico">${a.tone === "bad" ? "!" : a.tone === "warn" ? "~" : "→"}</span>
       <span class="radar-body"><b>${esc(a.title)}</b><span>${esc(a.detail)}</span></span>
-    </button>`).join("") + (alerts.length > 2 ? `<button class="radar-more" data-act="wing" data-key="ajuda">${esc(tr("atlas.radarMore", { n: alerts.length - 2 }))}</button>` : "");
+    </button>`).join("") + (alerts.length > shown ? `<button class="radar-more" data-act="wing" data-key="ajuda">${esc(tr("atlas.radarMore", { n: alerts.length - shown }))}</button>` : "");
   }
 
   function renderTicker() {
@@ -2346,7 +2357,7 @@
   /* ---------------------------------------------------------- tour */
 
   const TOUR = [
-    { target: "#sunGauge", title: "O sol é a sua cota", text: "O anel mostra a folga real da janela do Codex. Clique para alternar entre semana, janela de 5h e Claude. Duplo clique abre o detalhamento." },
+    { target: "#sunGauge", title: "A janela é a sua cota", text: "A faixa mostra a folga real da janela do Codex. Clique para alternar entre semana, janela de 5h e Claude. Duplo clique abre o detalhamento." },
     { target: "#fleet", title: "Cada balão é um provedor", text: "O número é a fatia de tokens no período. Clique em um balão para filtrar o gráfico e abrir o manual daquela IA, com documentação oficial." },
     { target: ".chart-wrap", title: "O gráfico é hora a hora", text: "Passe o mouse para ver provedor e custo. Clique numa barra para abrir a hora. A linha do tempo abaixo viaja entre os dias monitorados." },
     { target: ".cockpit", title: "O cockpit decide por você", text: "Agora, provedores, erros diagnosticados com prompt pronto e dicas geradas dos seus números. Tudo baseado no snapshot local." },
@@ -2762,12 +2773,12 @@
       <div class="w-grid three">
         <div class="w-card">
           <div class="w-card-head"><div><h3>Sessões monitoradas</h3><p>clique para ver composição do contexto</p></div><span class="pill">${pct(avgCtx, 0)} médio</span></div>
-          <div class="w-table">
+          <div class="w-table sessions-table">
             <div class="w-row head" style="grid-template-columns:minmax(0,1.65fr) minmax(0,1fr) 42px 48px 40px 62px"><span>sessão</span><span>contexto</span><span>msg</span><span>tools</span><span>dup</span><span>vista</span></div>
             ${rows.map((s) => {
               const ctxSeg = (s.context || []).filter((c) => c.name !== "free_space").map((c) => `<i style="width:${clamp(c.pct)}%"></i>`).join("");
               return `<button class="w-row" data-session-row data-search="${esc(`${s.title} ${s.project} ${s.model}`)}" data-act="session" data-id="${esc(s.id)}" style="grid-template-columns:minmax(0,1.65fr) minmax(0,1fr) 42px 48px 40px 62px">
-                <span class="r-main" style="display:block"><b style="display:block">${esc(s.title)}</b><span>${esc(s.project)} · ${esc(s.model)}</span></span>
+                <span class="r-main" style="display:block"><b style="display:block">${esc(s.title)}</b><span>${esc(s.project)} · ${esc(s.model)}<em class="r-when"> · ${esc(rel(s.updated_at))}</em></span></span>
                 <span><span class="ctx-bar">${ctxSeg}</span><small style="font-size:8px;color:#8aa0a9">${pct(s.context_pct, 0)}</small></span>
                 <span class="num">${int(s.messages)}</span>
                 <span class="num">${int(s.tool_calls)}</span>
