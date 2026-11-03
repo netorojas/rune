@@ -57,11 +57,11 @@ O Rune já tem o começo certo: ⌘K (`app.js:3670-3700`), tour de cinco passos 
 
 ## 5. Autocrítica
 
-1. **Quatro arquivos, nenhum build.** `server.py` tem 1.382 linhas, `app.js` 4.761, `styles.css` 5.827 e `i18n.js` 1.655. HTTP, SQL, SLO, sonda e auditoria dividem o mesmo arquivo. Sem módulos, lint ou tipos, toda mudança de snapshot toca vários pontos e ninguém consegue revisar isolado.
-2. **Zero testes e zero CI.** Não existe arquivo de teste nem workflow no repositório. O contrato do `/api/snapshot` só é verificado abrindo o painel; uma coluna renomeada quebra a tela em silêncio.
+1. **Quatro arquivos, nenhum build.** `server.py` tem 1.498 linhas, `app.js` 5.047, `styles.css` 5.966 e `i18n.js` 1.799. HTTP, SQL, SLO, sonda e auditoria dividem o mesmo arquivo. Sem módulos, lint ou tipos, toda mudança de snapshot toca vários pontos e ninguém consegue revisar isolado.
+2. **Testes existem, cobertura ainda curta.** `tests/test_contract.py` cobre mascaramento, origem, cota, shape do snapshot e da frota, auditoria, métricas e persistência da sonda; `tests/test_i18n.mjs` reprova chave ausente, órfã ou com variáveis divergentes; `.github/workflows/ci.yml` roda tudo a cada push. Falta teste de integração HTTP real (subir o servidor e chamar as rotas) e regressão visual automatizada.
 3. **macOS-only e sem pacote.** O caminho do Qoder (`server.py:36`), `/Applications` (`collector/collect.py:371`) e `~/Projetos` (`collector/collect.py:27`) são fixos, e não há `pyproject.toml`, Homebrew ou pacote assinado. O README admite o macOS; "adaptável" significa editar código.
 4. **O "porto 3D" é SVG isométrico, não WebGL.** A cena é gerada com `portBlob`, `<g>` e transform de câmera (`app.js:992-1405`). Cada construção abre um inspetor com dados e duas ações, então não é decoração pura; mas são centenas de linhas de cenário para um painel que precisa entregar número em dois segundos.
-5. **i18n incompleto.** São 518 chaves por idioma, com fallback automático para PT (`i18n.js:1649-1652`). O cais do Atlas e o dock já estão traduzidos (`port.quay*`, `port.dockRoutes*`), mas o cartão "Frota ao vivo" da Biblioteca e a gaveta do provedor ainda têm texto fixo ("Testar todas", "respondendo", "sem teste"). Em EN/ES a tela mistura idiomas.
+5. **i18n fechado nas superfícies da frota.** São 566 entradas por pack e 332 chaves usadas pelo painel, sem furos; o lint `tests/test_i18n.mjs` roda no CI e reprova chave ausente, órfã ou com variáveis divergentes. O que resta é traduzir textos gerados no servidor (diagnósticos e prompts de correção), que continuam em PT.
 6. **O orçamento mensal mede 14 dias.** A série vem de `load_router_usage(days=14)` (`server.py:135`), mas `monthUsage` projeta dividindo pelo dia do mês (`app.js:2324-2340`). No dia 28, o "mês" tem 14 dias de dados e a projeção subestima. O limite também vive em `localStorage` (`app.js:319`), não no servidor: não é compartilhável nem auditável.
 7. **Retenção quase zero.** `data.json` é sobrescrito a cada coleta (`collector/collect.py:726-729`). O resultado da sonda já persiste em `.rune-data/fleet.json` (`0600`), mas guarda apenas o último estado por rota — sem série. Não há tendência, comparação anual ou prova de consumo passado.
 8. **A sonda só conhece rotas codificadas.** `OWNER_META` tem 12 entradas fixas (`server.py:597-610`); uma conexão nova no 9router responde "rota desconhecida". O laço tenta até 4 modelos por rota. O SLO também é recortado pelas últimas 5.000 requisições (`server.py:300`), não pelos 7 dias completos. O README já documenta `/api/probe` e `/api/fleet`.
@@ -83,8 +83,8 @@ Os primeiros itens são os que fazem alguém pagar: prova de orquestração, or�
 | 7 | Alertas nativos no macOS + webhook | alto | P | Não | Alerta só dentro da aba (`app.js:2351-2371`); com o painel fechado, o orçamento estoura sem aviso |
 | 8 | Modo equipe opcional (perfis locais, custo por operador) | alto | G | Não | Um operador só (`server.py:120-132`); é o que destrava compra por time sem virar SaaS |
 | 9 | Retenção local de 12 meses (SQLite do Rune) | alto | G | Não | Sem histórico não há tendência, auditoria anual ou comparação de custo por projeto |
-| 10 | Testes de contrato do `/api/snapshot` + CI | médio | M | Não | 1.382 linhas sem rede de segurança; schema quebrado é descoberto pelo usuário |
-| 11 | Lint de i18n e remoção de PT fixo | médio | P | Não | Evita tela bilíngue em EN/ES e impede que o próximo recurso repita o problema |
+| 10 | Testes de contrato do `/api/snapshot` + CI | médio | M | Feito: 18 testes + workflow | Mudança de schema agora quebra o CI, não a tela do usuário |
+| 11 | Lint de i18n e remoção de PT fixo | médio | P | Feito: `tests/test_i18n.mjs` no CI | Chave ausente ou variável divergente reprova o push |
 | 12 | Cache do `/metrics` e moeda explícita | médio | P | Não | Scrape a cada 15 s remonta o snapshot; `_brl` fixo engana quem integra com Grafana |
 
 ## 7. Fontes

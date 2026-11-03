@@ -134,6 +134,23 @@ def _operator_name() -> str:
     return name[:24] if name else "operador"
 
 
+def _origin_matches(origin: str, host: str) -> bool:
+    """Só aceita POST de uma origem que aponta para o próprio Host local (anti-CSRF)."""
+    origin = (origin or "").strip()
+    if not origin:
+        return True  # curl e scripts locais não enviam Origin
+    try:
+        origin_host = (urlparse(origin).hostname or "").lower()
+    except ValueError:
+        return False
+    req_host = (host or "").strip().lower()
+    if req_host.startswith("["):
+        req_host = req_host[1:].split("]", 1)[0]
+    else:
+        req_host = req_host.split(":")[0]
+    return bool(origin_host) and origin_host == req_host
+
+
 def load_router_usage(days: int = 14) -> dict:
     """Série diária e chamadas recentes direto do banco do 9router."""
     out = {"days": [], "recent": [], "providers": {}, "models": {}, "errors": [], "today": {}, "slo": {"providers": [], "overall": {}, "window": "7d"}}
@@ -1395,15 +1412,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _same_origin(self) -> bool:
         """Bloqueia POST disparado por outra página aberta no navegador (CSRF em loopback)."""
-        origin = (self.headers.get("Origin") or "").strip()
-        if not origin:
-            return True  # curl e scripts locais não enviam Origin
-        try:
-            origin_host = (urlparse(origin).hostname or "").lower()
-        except ValueError:
-            return False
-        req_host = (self.headers.get("Host") or "").split(":")[0].lower()
-        return bool(origin_host) and origin_host == req_host
+        return _origin_matches(self.headers.get("Origin") or "", self.headers.get("Host") or "")
 
     def do_POST(self):
         path = urlparse(self.path).path

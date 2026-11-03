@@ -15,15 +15,17 @@ Requisitos: macOS, Python 3.10+ e um 9router local com `~/.9router/db/data.sqlit
 ## Antes de abrir um PR
 
 ```bash
+python3 -m unittest discover -s tests -v
 node --check app.js
 node --check i18n.js
+node tests/test_i18n.mjs
 python3 -m py_compile server.py collector/collect.py
 curl -s http://127.0.0.1:8770/api/health
 curl -s http://127.0.0.1:8770/api/security | python3 -m json.tool
 curl -s http://127.0.0.1:8770/metrics | head
 ```
 
-Teste também no navegador: abra o painel, navegue pelas alas, alterne idioma/moeda, crie um orçamento, exporte CSV e confira o console sem erros.
+O CI roda os testes e o lint de i18n em cada push. Teste também no navegador: abra o painel, navegue pelas alas, alterne idioma/moeda, crie um orçamento, exporte CSV e confira o console sem erros.
 
 ## O que aceitamos bem
 

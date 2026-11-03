@@ -1,5 +1,7 @@
 # Rune
 
+[![CI](https://github.com/netorojas/rune/actions/workflows/ci.yml/badge.svg)](https://github.com/netorojas/rune/actions/workflows/ci.yml)
+
 **Central local-first de controle do seu uso de IA.**
 Tokens, custo, cota, saúde, orçamento e diagnóstico — sem conta, sem nuvem, sem enviar seus dados para lugar nenhum.
 
@@ -76,6 +78,16 @@ Se você já usa o coletor em `~/.ai-usage`:
 ```bash
 AI_USAGE_HOME="$HOME/.ai-usage" python3 server.py
 ```
+
+### Testes
+
+```bash
+python3 -m unittest discover -s tests -v   # contratos do servidor
+node --check app.js && node --check i18n.js
+node tests/test_i18n.mjs                   # cobertura PT/EN/ES
+```
+
+O CI em `.github/workflows/ci.yml` roda os mesmos comandos a cada push e pull request.
 
 ### Variáveis
 
