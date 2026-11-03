@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#F4F0E5">
 <title>Rune · Atlas</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='17' fill='%23FF4B2B'/%3E%3Cpath d='M23 47V17h10a9 9 0 0 1 0 18h-6l13 12' fill='none' stroke='%23FFFDF7' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -146,26 +147,53 @@
 
       <main class="dashboard port-dashboard">
         <section class="port" id="port" aria-label="Porto Rune — mapa da sua operação">
-          <div class="port-scenery" aria-hidden="true">
-            <span class="port-sun"></span>
-            <span class="port-cloud pc1"></span>
-            <span class="port-cloud pc2"></span>
-            <span class="port-cloud pc3"></span>
-            <span class="port-ridge pr1"></span>
-            <span class="port-ridge pr2"></span>
-          </div>
-
           <div class="port-viewport" id="portViewport" tabindex="0" aria-label="Mapa interativo. Arraste para explorar; use as setas para mover e mais ou menos para aproximar.">
             <svg class="port-world" id="portWorld" viewBox="0 0 1200 1000" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fonte, IAs e ferramentas do seu ambiente">
               <defs>
-                <linearGradient id="portSea" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stop-color="#DCEAE2"/>
-                  <stop offset="1" stop-color="#EFE7D5"/>
-                </linearGradient>
+                <radialGradient id="portSea" cx="50%" cy="42%" r="72%">
+                  <stop offset="0" stop-color="#D8F1EA"/>
+                  <stop offset=".38" stop-color="#A8DBD8"/>
+                  <stop offset=".72" stop-color="#74B9C5"/>
+                  <stop offset="1" stop-color="#4A93A8"/>
+                </radialGradient>
+                <radialGradient id="portSeaGlow" cx="50%" cy="44%" r="58%">
+                  <stop offset="0" stop-color="#F6FDF3" stop-opacity=".92"/>
+                  <stop offset=".6" stop-color="#CBEDE6" stop-opacity=".34"/>
+                  <stop offset="1" stop-color="#7BBAC5" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="portSunlight" cx="82%" cy="2%" r="70%">
+                  <stop offset="0" stop-color="#FFF2C4" stop-opacity=".9"/>
+                  <stop offset=".55" stop-color="#FFEDB8" stop-opacity=".26"/>
+                  <stop offset="1" stop-color="#FFF3D2" stop-opacity="0"/>
+                </radialGradient>
                 <linearGradient id="portShore" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stop-color="#E8DFC8"/>
-                  <stop offset="1" stop-color="#DCD2B8"/>
+                  <stop offset="0" stop-color="#F7E6BC"/>
+                  <stop offset="1" stop-color="#E6CE9A"/>
                 </linearGradient>
+                <linearGradient id="portCliff" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#BDA06A"/>
+                  <stop offset="1" stop-color="#8A7047"/>
+                </linearGradient>
+                <linearGradient id="portGrass" x1="0" y1="0" x2=".8" y2="1">
+                  <stop offset="0" stop-color="#BCE07C"/>
+                  <stop offset=".55" stop-color="#9CCD5F"/>
+                  <stop offset="1" stop-color="#7CB44C"/>
+                </linearGradient>
+                <radialGradient id="portIslandLight" cx="36%" cy="26%" r="82%">
+                  <stop offset="0" stop-color="#FFFBDE" stop-opacity=".66"/>
+                  <stop offset=".55" stop-color="#FFF6C8" stop-opacity=".16"/>
+                  <stop offset="1" stop-color="#FFF8DC" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="portGrassShade" cx="62%" cy="18%" r="88%">
+                  <stop offset="0" stop-color="#4E7F38" stop-opacity="0"/>
+                  <stop offset=".7" stop-color="#4E7F38" stop-opacity="0"/>
+                  <stop offset="1" stop-color="#335C28" stop-opacity=".34"/>
+                </radialGradient>
+                <radialGradient id="portShadow" cx="50%" cy="50%" r="50%">
+                  <stop offset="0" stop-color="#0F2A2E" stop-opacity=".22"/>
+                  <stop offset=".55" stop-color="#0F2A2E" stop-opacity=".12"/>
+                  <stop offset="1" stop-color="#0F2A2E" stop-opacity="0"/>
+                </radialGradient>
               </defs>
               <g id="portRoads" aria-hidden="true"></g>
               <g id="portBuildings"></g>
@@ -184,19 +212,16 @@
             </button>
           </header>
 
-          <div class="port-legend" aria-label="Legenda do mapa">
-            <span><i class="lg lg-source"></i><em id="portLegendSource">Fonte</em></span>
-            <span><i class="lg lg-ai"></i><em id="portLegendAi">IAs</em></span>
-            <span><i class="lg lg-tool"></i><em id="portLegendTool">Ferramentas</em></span>
-          </div>
-
           <div class="port-zoom" role="group" aria-label="Câmera do mapa">
             <button data-act="port-zoom-in" aria-label="Aproximar" title="Aproximar">+</button>
             <button data-act="port-zoom-out" aria-label="Afastar" title="Afastar">−</button>
             <button data-act="port-reset" aria-label="Recentralizar" title="Recentralizar">◎</button>
           </div>
 
-          <div class="port-hint" id="portHint">arraste para explorar · clique em uma construção</div>
+          <div class="port-hint" id="portHint">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M15.5 8.5l-2.1 5.4-5.4 2.1 2.1-5.4z"/></svg>
+            <span id="portHintText">Arraste para explorar · clique numa construção</span>
+          </div>
 
           <div class="port-dock">
             <div class="dock-metrics">

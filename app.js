@@ -349,6 +349,7 @@
 
   function boot() {
     scaleStage();
+    applyUiScale();
     initStars();
     initSceneFx();
     initParallax();
@@ -363,8 +364,53 @@
     startClocks();
   }
 
+  function applyUiScale(retry = 0) {
+    // Base de 1280x720. O zoom do CSS é ignorado por vários navegadores de TV,
+    // então a escala é feita com transform no shell — funciona em qualquer motor.
+    // As medidas vão em px prontos: navegadores de TV antigos não sabem dividir
+    // dentro de calc(), e a página ficaria minúscula.
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Alguns navegadores de TV devolvem 0 antes do primeiro layout.
+    if (!vw || !vh) {
+      if (retry < 20) setTimeout(() => applyUiScale(retry + 1), 100);
+      return;
+    }
+    const fit = Math.min(vw / 1280, vh / 720);
+    const scale = Math.max(1, Math.min(3, fit));
+    const scaled = scale > 1.001;
+    const root = document.documentElement;
+    const holder = document.querySelector(".holder");
+    root.style.setProperty("--ui-scale", scale.toFixed(4));
+    root.style.setProperty("--ui-w", `${(vw / scale).toFixed(2)}px`);
+    root.style.setProperty("--ui-h", `${(vh / scale).toFixed(2)}px`);
+    if (root.classList && root.classList.toggle) root.classList.toggle("ui-scaled", scaled);
+    // Estilos diretos no shell como segunda via: TVs antigas não aplicam
+    // custom properties dentro de transform/width, e aí a página ficava pequena.
+    if (holder) {
+      if (scaled) {
+        holder.style.width = `${(vw / scale).toFixed(2)}px`;
+        holder.style.height = `${(vh / scale).toFixed(2)}px`;
+        holder.style.transform = `scale(${scale.toFixed(4)})`;
+        holder.style.transformOrigin = "top left";
+        holder.style.overflow = "hidden";
+      } else {
+        holder.style.width = "";
+        holder.style.height = "";
+        holder.style.transform = "";
+        holder.style.transformOrigin = "";
+        holder.style.overflow = "";
+      }
+    }
+    root.style.zoom = "";
+    if (window.requestAnimationFrame) requestAnimationFrame(() => applyPortCamera());
+    else setTimeout(applyPortCamera, 32);
+  }
+
   function scaleStage() {
     stage.style.transform = "none";
+    // Em TV/monitor grande o holder é dimensionado pelo applyUiScale; não sobrescrever.
+    if (document.documentElement.classList.contains("ui-scaled")) return;
     holder.style.width = "100%";
     holder.style.height = "auto";
   }
@@ -720,7 +766,7 @@
     const left = mixHex(color, "#FFFFFF", .14);
     const right = mixHex(color, "#0F1A15", .28);
     const ink = "#12201C";
-    const glass = "#F7F2E4";
+    const glass = "#FFF4CE";
     const red = "#FF4B2B";
     const s = `stroke="${ink}" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"`;
     const shadow = `<ellipse cx="60" cy="82" rx="33" ry="5.4" fill="${ink}" opacity=".13"/>`;
@@ -879,49 +925,545 @@
     const top = mixHex(color, "#FFFFFF", .42);
     const left = mixHex(color, "#FFFFFF", .1);
     const right = mixHex(color, "#0F1A15", .26);
-    const glass = "#F7F2E4";
+    const glass = "#FFF4CE";
+    const detail = opts.detail !== false;
     let windows = "";
     if (opts.windows !== false) {
       const rows = opts.rows || [0.24, 0.5, 0.76];
-      rows.forEach((v) => {
+      const shade = opts.shade || "#E9D9A6";
+      rows.forEach((v, ri) => {
         const x = (w / 2) * (opts.cols || 0.56);
         const y = -h + d / 2 + v * h;
-        windows += `<path d="M${x.toFixed(1)} ${y.toFixed(1)}l9 -4.4v7.2l-9 4.4z" fill="${glass}" opacity="${opts.glow ? .94 : .7}" stroke="${ink}" stroke-width=".6"/>`;
-        windows += `<path d="M${(-w / 2 + 12).toFixed(1)} ${(y + 4).toFixed(1)}l8 -4v6.4l-8 4z" fill="${right}" opacity=".28"/>`;
+        windows += `<path class="port-win" style="animation-delay:${(ri * -1.7 + (opts.delay || 0)).toFixed(1)}s" d="M${x.toFixed(1)} ${y.toFixed(1)}l9 -4.4v7.2l-9 4.4z" fill="${glass}" opacity="${opts.glow ? .94 : .7}" stroke="${ink}" stroke-width=".6"/>`;
+        windows += `<path class="port-win" style="animation-delay:${(ri * -1.9 + .6).toFixed(1)}s" d="M${(-w / 2 + 12).toFixed(1)} ${(y + 4).toFixed(1)}l8 -4v6.4l-8 4z" fill="${glass}" opacity=".34" stroke="${ink}" stroke-width=".5"/>`;
+        // Janelas da face direita: sem elas a fachada sombreada fica chapada.
+        [.3, .58].forEach((u, ci) => {
+          const wx = u * w / 2;
+          const wy = -h + d / 2 - (d / 2) * u + v * h;
+          windows += `<path class="port-win" style="animation-delay:${(ri * -1.5 + ci * .7 + .3).toFixed(1)}s" d="M${wx.toFixed(1)} ${wy.toFixed(1)}l${(9 - u * 3).toFixed(1)} ${(-4.4 + u * 1.4).toFixed(1)}v7.2l${(-9 + u * 3).toFixed(1)} ${(4.4 - u * 1.4).toFixed(1)}z" fill="${opts.glow ? shade : glass}" opacity="${opts.glow ? .8 : .42}" stroke="${ink}" stroke-width=".5"/>`;
+        });
+        if (detail) {
+          windows += `<path class="port-win" style="animation-delay:${(ri * -2.4 + 1.1).toFixed(1)}s" d="M${(x * .46).toFixed(1)} ${(y + 2.2).toFixed(1)}l7 -3.4v5.6l-7 3.4z" fill="${glass}" opacity=".6" stroke="${ink}" stroke-width=".5"/>`;
+        }
+        if (opts.dense) {
+          windows += `<path class="port-win" style="animation-delay:${(ri * -1.3 + .4).toFixed(1)}s" d="M${(x * .18).toFixed(1)} ${(y + 2.8).toFixed(1)}l7 -3.4v5.6l-7 3.4z" fill="${glass}" opacity=".5" stroke="${ink}" stroke-width=".5"/>`;
+        }
       });
     }
+    const door = detail && h > 46
+      ? `<path d="M${(w * .12).toFixed(1)} ${(d / 2 - w * .03).toFixed(1)}l${(w * .13).toFixed(1)} ${(-w * .065).toFixed(1)}v${(-h * .2).toFixed(1)}l${(-w * .13).toFixed(1)} ${(w * .065).toFixed(1)}z" fill="${ink}" opacity=".26"/>`
+      : "";
+    const roof = detail
+      ? `<path d="M0 ${(-h - 7).toFixed(1)}l9 -4.5 9 4.5-9 4.5z" fill="${right}" stroke="${ink}" stroke-width=".9" stroke-linejoin="round"/>
+         <path d="M${-w / 2} ${-h}L0 ${-h - d / 2}" stroke="#FFFFFF" stroke-width="1.1" opacity=".45"/>`
+      : "";
+    const plinth = detail
+      ? `<path d="M${-w / 2} -5L0 ${(d / 2 - 5).toFixed(1)}L0 ${(d / 2).toFixed(1)}L${-w / 2} 0Z" fill="#E4D6B6" opacity=".5"/>
+         <path d="M0 ${(d / 2 - 5).toFixed(1)}L${w / 2} -5L${w / 2} 0L0 ${(d / 2).toFixed(1)}Z" fill="#CBB894" opacity=".55"/>`
+      : "";
     return `<g class="iso">
-      <ellipse cx="0" cy="${(d / 2 + 6).toFixed(1)}" rx="${(w * .62).toFixed(1)}" ry="${(d * .32).toFixed(1)}" fill="${ink}" opacity=".13"/>
-      <polygon points="${-w / 2},${-h} 0,${-h + d / 2} 0,${d / 2} ${-w / 2},0" fill="${left}" stroke="${ink}" stroke-width="1.4" stroke-linejoin="round"/>
-      <polygon points="0,${-h + d / 2} ${w / 2},${-h} ${w / 2},0 0,${d / 2}" fill="${right}" stroke="${ink}" stroke-width="1.4" stroke-linejoin="round"/>
-      <polygon points="0,${-h - d / 2} ${w / 2},${-h} 0,${-h + d / 2} ${-w / 2},${-h}" fill="${top}" stroke="${ink}" stroke-width="1.4" stroke-linejoin="round"/>
+      <ellipse cx="${(-w * .18).toFixed(1)}" cy="${(d / 2 + 13).toFixed(1)}" rx="${(w * .9).toFixed(1)}" ry="${(d * .54).toFixed(1)}" fill="${ink}" opacity=".12"/>
+      <ellipse cx="${(-w * .12).toFixed(1)}" cy="${(d / 2 + 7).toFixed(1)}" rx="${(w * .62).toFixed(1)}" ry="${(d * .36).toFixed(1)}" fill="${ink}" opacity=".2"/>
+      <polygon points="${-w / 2},${-h} 0,${-h + d / 2} 0,${d / 2} ${-w / 2},0" fill="${left}" stroke="${ink}" stroke-width="1.6" stroke-linejoin="round"/>
+      <polygon points="0,${-h + d / 2} ${w / 2},${-h} ${w / 2},0 0,${d / 2}" fill="${right}" stroke="${ink}" stroke-width="1.6" stroke-linejoin="round"/>
+      <polygon points="0,${-h - d / 2} ${w / 2},${-h} 0,${-h + d / 2} ${-w / 2},${-h}" fill="${top}" stroke="${ink}" stroke-width="1.6" stroke-linejoin="round"/>
+      ${roof}
+      ${plinth}
+      ${door}
       ${windows}
       ${opts.extra || ""}
     </g>`;
   }
 
   function portRoad(d, color, active) {
-    return `<path class="port-road-base" d="${d}"/>
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const packets = active && !reduce
+      ? [0, 1].map((n) => `<circle class="port-packet" r="3.6" fill="${color}" stroke="#12201C" stroke-width="1.1">
+          <animateMotion dur="${3.4 + n * 1.2}s" begin="${(n * 1.4).toFixed(1)}s" repeatCount="indefinite" path="${d}"/>
+        </circle>`).join("")
+      : "";
+    return `<path class="port-road-edge" d="${d}"/>
+      <path class="port-road-base" d="${d}"/>
       <path class="port-road-line" d="${d}"/>
-      ${active ? `<path class="port-road-flow" d="${d}" style="stroke:${color}"/>` : ""}`;
+      ${active ? `<path class="port-road-flow" d="${d}" style="stroke:${color}"/>` : ""}
+      ${packets}`;
+  }
+
+  function portBlob(cx, cy, rx, ry, wobble) {
+    const n = wobble.length;
+    const pts = wobble.map((f, i) => {
+      const a = (i / n) * Math.PI * 2;
+      return [cx + Math.cos(a) * rx * f, cy + Math.sin(a) * ry * f];
+    });
+    let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+    for (let i = 0; i < n; i++) {
+      const p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+      d += `C${c1x.toFixed(1)} ${c1y.toFixed(1)} ${c2x.toFixed(1)} ${c2y.toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+    }
+    return d + "Z";
+  }
+
+  const PORT_SHAPE = {
+    outer: [1.03, .965, 1.02, .985, 1.01, .96, 1.025, .98, 1.03, 1, .965, 1.015],
+    cliff: [1.015, .97, 1.01, .985, 1.005, .968, 1.015, .985, 1.02, 1, .972, 1.008],
+    shore: [1.008, .975, 1.004, .988, 1, .972, 1.01, .99, 1.012, 1, .976, 1.004],
+    grass: [1.004, .978, 1.002, .99, 1, .976, 1.006, .992, 1.008, 1, .98, 1.002],
+    inner: [1.002, .984, 1.001, .994, 1, .982, 1.003, .995, 1.004, 1, .986, 1.001],
+  };
+
+  function portTree(x, y, s = 1, tone = 0) {
+    const palettes = [
+      ["#5F8C3B", "#4E7A2F", "#79A653"],
+      ["#557F35", "#466C2A", "#6E9A49"],
+      ["#6A9842", "#567F33", "#87B25C"],
+    ];
+    const [mid, dark, light] = palettes[tone % palettes.length];
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="1" cy="1" rx="16" ry="5.8" fill="#12201C" opacity=".18"/>
+      <path d="M0 0V-11" stroke="#8A6B43" stroke-width="2.6" stroke-linecap="round"/>
+      <ellipse cx="-6" cy="-15" rx="10" ry="7.5" fill="${dark}"/>
+      <ellipse cx="6" cy="-17" rx="9" ry="7" fill="${light}"/>
+      <ellipse cx="0" cy="-24" rx="8" ry="6.5" fill="${mid}"/>
+      <ellipse cx="-2" cy="-26" rx="4.5" ry="3" fill="#FFFFFF" opacity=".18"/>
+    </g>`;
+  }
+
+  function portRock(x, y, s = 1) {
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="0" cy="1" rx="12" ry="4" fill="#12201C" opacity=".12"/>
+      <path d="M-10 0l3-8 7-3 8 4 2 7z" fill="#B8AC90" stroke="#8F8164" stroke-width="1" stroke-linejoin="round"/>
+      <path d="M-10 0l3-8 3 8z" fill="#D8CFB8" opacity=".85"/>
+    </g>`;
+  }
+
+  function portBoat(x, y, s = 1, flip = false) {
+    return `<g class="port-boat" transform="translate(${x} ${y}) scale(${flip ? -s : s} ${s})">
+      <ellipse cx="0" cy="11" rx="26" ry="7" fill="#12201C" opacity=".12"/>
+      <g class="port-wake" stroke="#FFFFFF" stroke-width="1.7" fill="none" stroke-linecap="round">
+        <path d="M-26 5c-9 2-16 3-24 2"/>
+        <path d="M-24 10c-8 3-14 4-20 4"/>
+      </g>
+      <g class="port-boat-bob">
+        <path d="M-24 0h48l-8 10h-32z" fill="#F2E7CE" stroke="#12201C" stroke-width="1.4" stroke-linejoin="round"/>
+        <path d="M-24 0h48l-2 3h-44z" fill="#FF4B2B" opacity=".72"/>
+        <path d="M-2 -1v-26" stroke="#12201C" stroke-width="1.8"/>
+        <path d="M-1 -25l16 18H-1z" fill="#FFFDF7" stroke="#12201C" stroke-width="1.2" stroke-linejoin="round"/>
+        <path d="M-3 -21l-12 14h12z" fill="#E8B39E" stroke="#12201C" stroke-width="1.2" stroke-linejoin="round"/>
+      </g>
+    </g>`;
+  }
+
+  function portIslet(x, y, s = 1) {
+    return `<g transform="translate(${x} ${y}) scale(${s})" opacity=".62">
+      <ellipse cx="0" cy="8" rx="64" ry="16" fill="#12201C" opacity=".08"/>
+      <ellipse cx="0" cy="4" rx="58" ry="15" fill="#D9CDA9"/>
+      <ellipse cx="0" cy="0" rx="54" ry="13" fill="#B9D086"/>
+      ${portTree(-18, 2, .6, 0)}${portTree(20, 4, .5, 1)}
+    </g>`;
+  }
+
+  function portCloud(x, y, s = 1, delay = 0) {
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <g class="port-cloud" style="animation-delay:${delay}s">
+        <ellipse cx="0" cy="3" rx="44" ry="12" fill="#FFFDF7" opacity=".86"/>
+        <ellipse cx="-30" cy="6" rx="22" ry="9" fill="#FFFDF7" opacity=".62"/>
+        <ellipse cx="30" cy="6" rx="26" ry="10" fill="#FFFDF7" opacity=".58"/>
+        <ellipse cx="-5" cy="-6" rx="24" ry="12" fill="#FFFDF7" opacity=".92"/>
+        <ellipse cx="14" cy="-1" rx="18" ry="9" fill="#FFFDF7" opacity=".78"/>
+      </g>
+    </g>`;
+  }
+
+  function portTuft(x, y, s = 1) {
+    return `<g transform="translate(${x} ${y}) scale(${s})" stroke="#4F7A32" stroke-width="1.4" fill="none" stroke-linecap="round" opacity=".85">
+      <path d="M0 0c-1-4-3-6-5-7M0 0c0-5 1-7 2-9M0 0c2-4 5-5 7-6"/>
+    </g>`;
+  }
+
+  function portButterfly(x, y, color, delay = 0) {
+    return `<g transform="translate(${x} ${y})">
+      <g class="port-flutter" style="animation-delay:${delay}s">
+        <path d="M0 0c-5-6-9-4-8 0-1 4 3 6 8 0z" fill="${color}" stroke="#12201C" stroke-width=".7"/>
+        <path d="M0 0c5-6 9-4 8 0 1 4-3 6-8 0z" fill="${color}" stroke="#12201C" stroke-width=".7"/>
+      </g>
+    </g>`;
+  }
+
+  function portWindmill(x, y, s = 1) {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const spin = reduce ? "" : `<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="12s" repeatCount="indefinite"/>`;
+    const blades = [0, 90, 180, 270].map((a) => `<path transform="rotate(${a})" d="M0 -3L4 -20L0 -24L-4 -20Z" fill="#FFFDF7" stroke="#12201C" stroke-width="1" stroke-linejoin="round"/>`).join("");
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="0" cy="5" rx="17" ry="5.5" fill="#12201C" opacity=".15"/>
+      <path d="M-13 3l3 -33h20l3 33z" fill="#F6EEDC" stroke="#12201C" stroke-width="1.3" stroke-linejoin="round"/>
+      <path d="M-9 3l2 -22h14l2 22z" fill="#E4D8BE" opacity=".7"/>
+      <path d="M-5 3v-9a5 5 0 0 1 10 0v9" fill="#8A6B43" stroke="#12201C" stroke-width="1"/>
+      <path d="M-12 -30h24l-4 -8h-16z" fill="#D97757" stroke="#12201C" stroke-width="1.2" stroke-linejoin="round"/>
+      <g transform="translate(0 -26)">${spin}${blades}<circle r="3" fill="#12201C"/></g>
+    </g>`;
+  }
+
+  function portCrane(x, y, s = 1, flip = false) {
+    const ink = "#2E4A3E";
+    return `<g transform="translate(${x} ${y}) scale(${flip ? -s : s} ${s})">
+      <ellipse cx="0" cy="4" rx="22" ry="6" fill="#12201C" opacity=".14"/>
+      <path d="M-12 4v-52M-12 -48h38M26 -48v11" stroke="${ink}" stroke-width="3" stroke-linecap="round" fill="none"/>
+      <path d="M-12 -40l11 -8M-12 -48l-12 8" stroke="${ink}" stroke-width="1.4"/>
+      <rect x="21" y="-38" width="11" height="9" rx="1.6" fill="#D97757" stroke="#12201C" stroke-width="1"/>
+      <path d="M26 -29v10" stroke="#12201C" stroke-width="1.1"/>
+      <path d="M26 14a9 5 0 1 0 .1 0" fill="none" stroke="#C9B792" stroke-width="1.2"/>
+    </g>`;
+  }
+
+  function portContainer(x, y, color, s = 1) {
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="2" cy="8" rx="23" ry="6.5" fill="#12201C" opacity=".16"/>
+      ${portIsoBox(40, 22, 17, color, { windows: false })}
+      <path d="M-13 -5l26-13M-11 0l26-13" stroke="#12201C" stroke-width=".7" opacity=".2"/>
+    </g>`;
+  }
+
+  function portBush(x, y, s = 1, tone = 0) {
+    const palettes = [["#5E8A3B", "#85B25C"], ["#547E34", "#7AA650"], ["#68973F", "#93BA63"]];
+    const [dark, light] = palettes[tone % palettes.length];
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="1" cy="2" rx="15" ry="4.6" fill="#12201C" opacity=".18"/>
+      <ellipse cx="-5" cy="-4" rx="8" ry="6" fill="${dark}"/>
+      <ellipse cx="5" cy="-5" rx="7.5" ry="6.4" fill="${light}"/>
+      <ellipse cx="0" cy="-9" rx="7" ry="5.6" fill="${dark}"/>
+      <ellipse cx="-1" cy="-11" rx="3" ry="1.8" fill="#FFFFFF" opacity=".22"/>
+    </g>`;
+  }
+
+  function portLamp(x, y, s = 1) {
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="0" cy="2" rx="7" ry="2.4" fill="#12201C" opacity=".18"/>
+      <path d="M0 2V-26" stroke="#2E4A3E" stroke-width="2.2" stroke-linecap="round"/>
+      <circle class="port-glow" cx="0" cy="-25" r="13" fill="#FFE9A8"/>
+      <path d="M-6 -21h12l-2 -9h-8z" fill="#FFE9A8" stroke="#12201C" stroke-width="1.1" stroke-linejoin="round"/>
+      <path d="M-7 -31h14" stroke="#12201C" stroke-width="1.5" stroke-linecap="round"/>
+    </g>`;
+  }
+
+  function portCrate(x, y, s = 1, tone = "#D9A05B") {
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="1" cy="5" rx="11" ry="3.2" fill="#12201C" opacity=".16"/>
+      ${portIsoBox(19, 12, 12, tone, { windows: false, detail: false })}
+      <path d="M-5 -7l9-4M-5 -3l9-4" stroke="#12201C" stroke-width=".7" opacity=".28"/>
+    </g>`;
+  }
+
+  function portBuoy(x, y, s = 1, color = "#FF4B2B") {
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="0" cy="4" rx="9" ry="3" fill="#0F2A2E" opacity=".12"/>
+      <path d="M-4 2c0-4 8-4 8 0l-1 2h-6z" fill="${color}" stroke="#12201C" stroke-width=".9" stroke-linejoin="round"/>
+      <path d="M0 0v-10" stroke="#12201C" stroke-width="1.2"/>
+      <path d="M0 -10l6 3-6 3z" fill="#FFFDF7" stroke="#12201C" stroke-width=".8"/>
+      <ellipse class="port-glint" cx="0" cy="7" rx="6" ry="1.6"/>
+    </g>`;
+  }
+
+  function portGull(x, y, s = 1, flip = false) {
+    return `<g transform="translate(${x} ${y}) scale(${flip ? -s : s} ${s})">
+      <ellipse cx="0" cy="1" rx="5" ry="1.6" fill="#12201C" opacity=".12"/>
+      <path d="M-4 0c0-4 3-7 6-7 3 0 4 3 3 5l3 2-2 1-2-1c-1 2-6 2-8 0z" fill="#FFFDF7" stroke="#12201C" stroke-width=".9" stroke-linejoin="round"/>
+      <circle cx="4" cy="-6" r="2.1" fill="#FFFDF7" stroke="#12201C" stroke-width=".9"/>
+      <path d="M6 -6h3l-3 1z" fill="#E0A84E" stroke="#12201C" stroke-width=".6"/>
+    </g>`;
+  }
+
+  function portTruck(path, color, dur, delay) {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const motion = reduce ? "" : `<animateMotion dur="${dur}s" begin="${delay}s" repeatCount="indefinite" rotate="auto" path="${path}"/>`;
+    return `<g class="port-truck">${motion}
+      <g transform="translate(-7 -7)">
+        <ellipse cx="7" cy="10" rx="9" ry="2.6" fill="#12201C" opacity=".18"/>
+        <path d="M0 0h9l3 4v5H0z" fill="${color}" stroke="#12201C" stroke-width="1" stroke-linejoin="round"/>
+        <path d="M9 0l3 4h-3z" fill="#FFF4CE" stroke="#12201C" stroke-width=".9" stroke-linejoin="round"/>
+        <circle cx="3" cy="9" r="1.6" fill="#12201C"/><circle cx="9" cy="9" r="1.6" fill="#12201C"/>
+      </g>
+    </g>`;
+  }
+
+  function portPlaza(cx, cy) {
+    let rings = "";
+    for (let i = 1; i <= 4; i++) {
+      rings += `<ellipse cx="0" cy="0" rx="${58 + i * 24}" ry="${21 + i * 9}" fill="none" stroke="#C9B691" stroke-width="1" opacity="${(.42 - i * .06).toFixed(2)}"/>`;
+    }
+    let dots = "";
+    for (let i = 0; i < 26; i++) {
+      const a = (i / 26) * Math.PI * 2;
+      dots += `<circle cx="${(Math.cos(a) * 132).toFixed(1)}" cy="${(Math.sin(a) * 50).toFixed(1)}" r="1.5" fill="#B7A47E" opacity=".45"/>`;
+    }
+    let star = "";
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2 - Math.PI / 2;
+      const r = i % 2 ? 32 : 82;
+      star += `${i ? "L" : "M"}${(Math.cos(a) * r).toFixed(1)} ${(Math.sin(a) * r * .38).toFixed(1)}`;
+    }
+    return `<g class="port-plaza" transform="translate(${cx} ${cy})">
+      <ellipse cx="0" cy="0" rx="148" ry="56" fill="#F0E5CB" opacity=".6"/>
+      <ellipse cx="0" cy="-3" rx="116" ry="43" fill="#E9DBBC" opacity=".45"/>
+      ${rings}${dots}
+      <path d="${star}Z" fill="#D9C8A4" opacity=".32"/>
+      <path d="M0 -52V52M-140 0H140" stroke="#C9B691" stroke-width="1" opacity=".3"/>
+    </g>`;
+  }
+
+  function portField(x, y, rx, ry, rot = 0) {
+    let rows = "";
+    for (let i = -3; i <= 3; i++) {
+      rows += `<path d="M${(-rx + 8).toFixed(1)} ${(i * ry / 3.6).toFixed(1)}q${rx} 4 ${(rx * 2 - 16).toFixed(1)} 0"/>`;
+    }
+    return `<g transform="translate(${x} ${y}) rotate(${rot})" opacity=".5">
+      <ellipse cx="0" cy="0" rx="${rx}" ry="${ry}" fill="#DCEDB2" stroke="#B4CE82" stroke-width="1.1"/>
+      <g stroke="#A6C374" stroke-width="1.1" fill="none" stroke-linecap="round">${rows}</g>
+    </g>`;
+  }
+
+  function portSail(x, y, s = 1, flip = false) {
+    return `<g transform="translate(${x} ${y}) scale(${flip ? -s : s} ${s})" opacity=".9">
+      <ellipse cx="0" cy="7" rx="18" ry="4" fill="#0F2A2E" opacity=".1"/>
+      <path d="M-16 2c4 3 28 3 32 0" fill="#FFFDF7" stroke="#12201C" stroke-width="1.1"/>
+      <path d="M0 0v-30" stroke="#12201C" stroke-width="1.2"/>
+      <path d="M1 -29l13 22H1z" fill="#FFFDF7" stroke="#12201C" stroke-width="1"/>
+      <path d="M-2 -24l-10 17h10z" fill="#F3D9C7" stroke="#12201C" stroke-width="1"/>
+    </g>`;
+  }
+
+  function portHouse(x, y, s = 1, roof = "#D97757") {
+    const w = 34, d = 20, h = 17;
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="0" cy="${d / 2 + 5}" rx="25" ry="7.8" fill="#12201C" opacity=".2"/>
+      <polygon points="${-w / 2},${-h} 0,${-h + d / 2} 0,${d / 2} ${-w / 2},0" fill="#F6EEDC" stroke="#12201C" stroke-width="1.2" stroke-linejoin="round"/>
+      <polygon points="0,${-h + d / 2} ${w / 2},${-h} ${w / 2},0 0,${d / 2}" fill="#E4D8BE" stroke="#12201C" stroke-width="1.2" stroke-linejoin="round"/>
+      <polygon points="0,${-h - d / 2 - 9} ${w / 2 + 7},${-h - 1} 0,${-h + d / 2 + 5} ${-w / 2 - 7},${-h - 1}" fill="${roof}" stroke="#12201C" stroke-width="1.3" stroke-linejoin="round"/>
+      <path d="M${(-w / 2 + 9)} 0v-8h7v8" fill="#12201C" opacity=".45"/>
+      <path d="M6 ${-h + 5}h9v6h-9z" fill="#FFE9A8" stroke="#12201C" stroke-width=".7"/>
+      <circle class="port-puff" cx="${w / 2 - 5}" cy="${-h - d / 2 - 15}" r="2.6" fill="#FFFDF7"/>
+      <circle class="port-puff" cx="${w / 2 - 3}" cy="${-h - d / 2 - 21}" r="3.6" fill="#FFFDF7" style="animation-delay:-1.9s"/>
+    </g>`;
+  }
+
+  function portLighthouse(x, y, s = 1) {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const beam = reduce ? "" : `<g>
+        <path d="M0 -58 66 -84 66 -32z" fill="#FFF3C9" opacity=".42"/>
+        <path d="M0 -58 -66 -84 -66 -32z" fill="#FFF3C9" opacity=".42"/>
+        <animateTransform attributeName="transform" type="rotate" from="0 0 -58" to="360 0 -58" dur="16s" repeatCount="indefinite"/>
+      </g>`;
+    return `<g transform="translate(${x} ${y}) scale(${s})">
+      <ellipse cx="0" cy="6" rx="34" ry="12" fill="#12201C" opacity=".12"/>
+      <path d="M-26 4c4-9 16-13 26-13s22 4 26 13z" fill="#B9AC8C" stroke="#8F8164" stroke-width="1.2"/>
+      <path d="M-14 0h28l-5-54h-18z" fill="#FFFDF7" stroke="#12201C" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M-11.5 -16h19.5l-2 -13h-15.5z" fill="#FF4B2B" stroke="#12201C" stroke-width="1.2"/>
+      <path d="M-9.5 -54h19v-9h-19z" fill="#F7E7B4" stroke="#12201C" stroke-width="1.4"/>
+      <path d="M-12 -63h24l-3.6 -8h-16.8z" fill="#12201C"/>
+      <circle cx="0" cy="-58" r="3.6" fill="#FFE9A8" stroke="#12201C" stroke-width="1"/>
+      ${beam}
+    </g>`;
   }
 
   function portGround() {
+    const trees = [
+      [236, 430, .95, 0], [300, 350, .85, 1], [336, 588, .9, 2],
+      [420, 660, .85, 0], [560, 690, .8, 1], [700, 680, .9, 2],
+      [800, 640, .85, 0], [928, 602, .95, 1], [956, 414, .85, 0],
+      [892, 362, .9, 2], [500, 306, .8, 2], [704, 300, .8, 1],
+      [392, 462, .7, 1], [812, 470, .68, 0],
+    ];
+    const rocks = [[284, 610, .9], [742, 618, .8], [936, 394, .85], [376, 402, .7]];
+    const blooms = [[262, 452, "#FF8A6B"], [318, 620, "#F7C948"], [450, 676, "#FFF1C9"],
+      [610, 702, "#FF8A6B"], [770, 654, "#F7C948"], [930, 626, "#FFF1C9"],
+      [978, 516, "#FF8A6B"], [866, 386, "#F7C948"], [344, 382, "#FFF1C9"], [648, 664, "#F7C948"],
+      [470, 352, "#FF8A6B"], [742, 356, "#FFF1C9"], [240, 522, "#F7C948"]];
+    const tufts = [[320, 470], [352, 542], [432, 590], [520, 640], [660, 640], [744, 610],
+      [858, 560], [902, 470], [820, 420], [620, 360], [480, 360], [410, 400], [560, 598],
+      [682, 598], [760, 520], [822, 500], [300, 570], [392, 602], [540, 422], [660, 422],
+      [880, 630], [252, 610], [700, 350], [352, 350]];
     let waves = "";
-    for (let i = 0; i < 7; i++) {
-      const y = 590 + i * 52;
-      const x = i % 2 ? 40 : 140;
-      waves += `<path d="M${x} ${y}h${150 + i * 26}M${x + 210} ${y}h${90 + i * 20}" stroke="#B8CEC0" stroke-width="1.1" opacity="${.5 - i * .045}"/>`;
+    for (let i = 0; i < 9; i++) {
+      const y = 210 + i * 98;
+      const x = i % 2 ? 20 : 120;
+      waves += `<path class="port-wave" style="animation-delay:${(i * -.9).toFixed(1)}s" d="M${x} ${y}h${150 + i * 26}M${x + 230} ${y}h${90 + i * 20}" stroke="#8FC0C6" stroke-width="1.1" opacity="${.5 - i * .035}"/>`;
     }
-    return `<rect x="-420" y="190" width="2040" height="940" fill="url(#portSea)"/>
-      <g stroke-linecap="round">${waves}</g>
-      <ellipse cx="600" cy="486" rx="416" ry="248" fill="url(#portShore)"/>
-      <ellipse cx="600" cy="486" rx="416" ry="248" fill="none" stroke="#C3B69A" stroke-width="1.4" opacity=".7"/>
-      <ellipse cx="600" cy="486" rx="356" ry="200" fill="none" stroke="#C9BE9F" stroke-width="1" opacity=".5"/>
-      <ellipse cx="600" cy="486" rx="292" ry="152" fill="none" stroke="#CEC4A6" stroke-width="1" opacity=".35" stroke-dasharray="3 9"/>
-      <path class="port-pier" d="M148 892 246 748h708l98 144z" fill="#E6DCC5" stroke="#C3B69A" stroke-width="1.6" stroke-linejoin="round"/>
-      <path d="M190 866h820" stroke="#CFC3A7" stroke-width="1.2" stroke-dasharray="2 10" opacity=".8"/>
+    const glints = [[86, 300, 7], [176, 252, 5], [1048, 258, 6], [1148, 330, 8],
+      [74, 508, 6], [1138, 486, 7], [118, 756, 8], [1078, 752, 6], [286, 764, 5],
+      [930, 772, 7], [52, 866, 6], [1152, 858, 8], [354, 236, 5], [856, 232, 6],
+      [146, 654, 4], [1062, 642, 5], [190, 150, 5], [1010, 160, 6], [600, 160, 4]]
+      .map(([x, y, r], i) => `<ellipse class="port-glint" cx="${x}" cy="${y}" rx="${r}" ry="${(r * .34).toFixed(1)}" style="animation-delay:${(i * -.63).toFixed(2)}s"/>`)
+      .join("");
+    const birds = `<g class="port-birds" aria-hidden="true">
+      <path class="port-bird" style="animation-delay:-4s" d="M172 252c2.6-3.4 5.2-3.4 7.8 0 2.6-3.4 5.2-3.4 7.8 0"/>
+      <path class="port-bird" style="animation-delay:-13s" d="M236 226c2-2.6 4-2.6 6 0 2-2.6 4-2.6 6 0"/>
+      <path class="port-bird" style="animation-delay:-21s" d="M966 236c2.2-2.8 4.4-2.8 6.6 0 2.2-2.8 4.4-2.8 6.6 0"/>
     </g>`;
+    const shore = portBlob(600, 486, 400, 234, PORT_SHAPE.shore);
+    let striae = "";
+    for (let x = 228; x <= 972; x += 32) {
+      const t = (x - 600) / 416;
+      const yShore = 498 + 246 * Math.sqrt(Math.max(0, 1 - t * t));
+      const yRim = 522 + 254 * Math.sqrt(Math.max(0, 1 - t * t));
+      striae += `<path d="M${x} ${(yShore + 6).toFixed(1)}V${(yRim + 4).toFixed(1)}"/>`;
+    }
+    let planks = "";
+    for (let x = 216; x < 984; x += 64) {
+      planks += `<path d="M${x} 766h28l-32 132h-28z" fill="#B49C72" opacity=".18"/>`;
+    }
+    let bollards = "";
+    [268, 420, 572, 724, 876].forEach((x) => {
+      bollards += `<g transform="translate(${x} 872)"><path d="M-4 0v-8h8v8z" fill="#6B5940"/><ellipse cx="0" cy="-8" rx="4" ry="1.4" fill="#8C7A55"/></g>`;
+    });
+    const boardwalk = `<g class="port-boardwalk">
+      <path d="M520 676h160l20 76H500z" fill="#D2BF98" stroke="#A8916A" stroke-width="1.4"/>
+      <path d="M158 900 212 744h776l54 156z" fill="#DCC9A5" stroke="#AE986F" stroke-width="1.8" stroke-linejoin="round"/>
+      ${planks}
+      <path d="M212 744h776l7 20H205z" fill="#EBDCBB" opacity=".9"/>
+      <path d="M212 764h776l4 12H208z" fill="#B9A47C" opacity=".45"/>
+      <path d="M170 882h860l8 20H160z" fill="#A98F63"/>
+      ${bollards}
+      <path d="M268 864q76 8 152 0M572 864q76 8 152 0" stroke="#8C7A55" stroke-width="1.2" fill="none" opacity=".45"/>
+      <g stroke="#C9B792" stroke-width="1.1">
+        <path d="M214 772h772M222 800h756M230 828h740M238 856h724"/>
+      </g>
+      <g stroke="#BFAE88" stroke-width="1.4" stroke-linecap="round">
+        <path d="M212 744v156M276 744v156M340 744v156M404 744v156M468 744v156M532 744v156M596 744v156M660 744v156M724 744v156M788 744v156M852 744v156M916 744v156M980 744v156"/>
+      </g>
+      <g class="port-rails" stroke="#8C7A55" stroke-width="3.4" stroke-linecap="round">
+        <path d="M158 900v-26M1042 900v-26M206 744v-22M994 744v-22"/>
+        <path d="M158 876h-14M1042 876h14M206 724h-14M994 724h14"/>
+      </g>
+      <g transform="translate(236 862)">
+        <path d="M0 0l10-5 10 5-10 5z" fill="#E8C98D" stroke="#8C7A55" stroke-width="1"/>
+        <path d="M-10 0l10-5v10l-10 5zM10 0l10-5v10l-10 5z" fill="#D2AE72" stroke="#8C7A55" stroke-width="1"/>
+      </g>
+      <g transform="translate(272 878)">
+        <path d="M-9 2v-9a9 3.4 0 0 1 18 0v9" fill="#C79A63" stroke="#8C7A55" stroke-width="1.1"/>
+        <ellipse cx="0" cy="-7" rx="9" ry="3.4" fill="#E3BF8B" stroke="#8C7A55" stroke-width="1"/>
+      </g>
+      <g class="port-pier-lamps" stroke="#12201C" stroke-width="1.6">
+        <path d="M174 828v-22M1026 828v-22"/>
+        <circle cx="174" cy="802" r="4" fill="#FFE9A8" stroke="#12201C" stroke-width="1.2"/>
+        <circle cx="1026" cy="802" r="4" fill="#FFE9A8" stroke="#12201C" stroke-width="1.2"/>
+      </g>
+      ${portContainer(206, 880, "#D97757", .92)}
+      ${portContainer(994, 880, "#3E6B5A", .86)}
+      ${portContainer(238, 764, "#E0A84E", .68)}
+      ${portContainer(962, 764, "#6D8FB8", .68)}
+      ${portCrate(932, 818, .82, "#D9A05B")}${portCrate(950, 826, .68, "#3E6B5A")}
+      ${portCrate(252, 820, .72, "#6D8FB8")}
+      ${portGull(304, 762, 1)}${portGull(892, 764, .92, true)}
+      <g transform="translate(330 800)" stroke="#8C7A55" stroke-width="1.6" fill="none">
+        <ellipse cx="0" cy="0" rx="9" ry="3.2"/><ellipse cx="0" cy="0" rx="5" ry="1.8"/>
+      </g>
+    </g>`;
+    const depth = `<g class="port-island">
+      <ellipse cx="622" cy="560" rx="496" ry="302" fill="url(#portShadow)"/>
+      <ellipse cx="607" cy="536" rx="436" ry="256" fill="#12201C" opacity=".09"/>
+      <path d="${portBlob(600, 526, 430, 258, PORT_SHAPE.outer)}" fill="#12201C" opacity=".12"/>
+      <path d="${portBlob(600, 522, 424, 254, PORT_SHAPE.cliff)}" fill="#9A855C"/>
+      <path d="${portBlob(600, 510, 421, 251, PORT_SHAPE.cliff)}" fill="url(#portCliff)"/>
+      <path d="${portBlob(600, 500, 417, 247, PORT_SHAPE.shore)}" fill="url(#portShore)"/>
+      <g stroke="#8B7852" stroke-width="1.6" opacity=".16" stroke-linecap="round">${striae}</g>
+      <path d="${portBlob(600, 496, 410, 242, PORT_SHAPE.shore)}" fill="#EFE2C4" opacity=".5"/>
+      <path d="${portBlob(600, 495, 396, 233, PORT_SHAPE.grass)}" fill="#6E8C4C" opacity=".2"/>
+      <path d="${portBlob(600, 488, 393, 230, PORT_SHAPE.grass)}" fill="url(#portGrass)"/>
+      <path d="${portBlob(600, 488, 393, 230, PORT_SHAPE.grass)}" fill="url(#portGrassShade)"/>
+      <path d="${portBlob(600, 488, 393, 230, PORT_SHAPE.grass)}" fill="none" stroke="#F3FBD8" stroke-width="2" opacity=".38"/>
+      <g opacity=".42">
+        <ellipse cx="466" cy="566" rx="98" ry="35" fill="#CBE68E"/>
+        <ellipse cx="744" cy="592" rx="112" ry="39" fill="#C6E28A"/>
+        <ellipse cx="612" cy="384" rx="142" ry="43" fill="#D2EA98"/>
+        <ellipse cx="600" cy="470" rx="206" ry="80" fill="#F0E3C4" opacity=".75"/>
+      </g>
+      <ellipse cx="600" cy="470" rx="196" ry="74" fill="none" stroke="#BDAE86" stroke-width="1.2" stroke-dasharray="3 9" opacity=".55"/>
+      <path d="${portBlob(600, 482, 336, 196, PORT_SHAPE.inner)}" fill="#F2F8D8" opacity=".28"/>
+      <path d="${portBlob(600, 486, 384, 224, PORT_SHAPE.grass)}" fill="url(#portIslandLight)"/>
+      ${portPlaza(600, 470)}
+      ${portField(700, 614, 40, 14, -5)}${portField(362, 670, 33, 11, 4)}
+      <path d="${shore}" fill="none" stroke="#FFFDF5" stroke-width="2.2" opacity=".5"/>
+      <path class="port-foam" d="${portBlob(600, 502, 421, 249, PORT_SHAPE.shore)}" fill="none" stroke="#FFFDF5" stroke-width="2.4" stroke-dasharray="4 12" opacity=".65"/>
+      <path d="${portBlob(600, 488, 393, 230, PORT_SHAPE.grass)}" fill="none" stroke="#AFC982" stroke-width="1.4" opacity=".6"/>
+      <path d="${portBlob(600, 484, 348, 200, PORT_SHAPE.inner)}" fill="none" stroke="#8FAE66" stroke-width="1" opacity=".22" stroke-dasharray="3 9"/>
+    </g>`;
+    return `<rect x="-900" y="-900" width="3000" height="2400" fill="url(#portSea)"/>
+      <rect x="-900" y="-900" width="3000" height="2400" fill="url(#portSunlight)"/>
+      <rect x="-900" y="-900" width="3000" height="2400" fill="url(#portSeaGlow)"/>
+      ${glints}
+      <g stroke-linecap="round">${waves}</g>
+      <g fill="#FFFDF7" opacity=".2">
+        <ellipse cx="228" cy="238" rx="54" ry="10"/><ellipse cx="1096" cy="214" rx="46" ry="8"/>
+        <ellipse cx="640" cy="150" rx="40" ry="7"/><ellipse cx="150" cy="366" rx="34" ry="6"/>
+      </g>
+      ${portIslet(150, 330, 1)}${portIslet(1058, 316, .9)}${portIslet(636, 168, .52)}${portIslet(292, 190, .42)}
+      ${portCloud(206, 206, 1, 0)}${portCloud(1112, 182, .84, -16)}${portCloud(660, 132, .58, -9)}
+      ${birds}
+      ${portSail(96, 402, .82)}${portSail(1138, 372, .7, true)}
+      ${portBuoy(72, 622, 1)}${portBuoy(1148, 648, .92, "#F7C948")}${portBuoy(1006, 712, .8)}
+      <path d="${portBlob(600, 516, 452, 270, PORT_SHAPE.shore)}" fill="none" stroke="#E9F8F3" stroke-width="15" opacity=".26"/>
+      <g fill="#BFE2DC" opacity=".35">
+        <ellipse cx="188" cy="486" rx="34" ry="9"/><ellipse cx="1010" cy="560" rx="42" ry="11"/>
+        <ellipse cx="342" cy="764" rx="30" ry="8"/><ellipse cx="866" cy="778" rx="36" ry="9"/>
+      </g>
+      ${depth}
+      ${portLighthouse(128, 704, .95)}
+      <g stroke-linecap="round" opacity=".5">
+        <path class="port-wave" d="M170 690c60 10 120 10 180 0M1010 660c-52 9-104 9-156 0" stroke="#FFFFFF" stroke-width="2"/>
+      </g>
+      ${portHouse(700, 566, .9, "#D97757")}${portHouse(368, 622, .82, "#E0A84E")}
+      ${portWindmill(452, 590, .92)}
+      ${portLamp(462, 476, 1)}${portLamp(738, 476, 1)}
+      ${tufts.map(([x, y]) => portTuft(x, y, .9)).join("")}
+      ${trees.map(([x, y, s, t]) => portTree(x, y, s, t)).join("")}
+      ${[[330, 452, .9, 0], [668, 598, .82, 1], [862, 654, .88, 2], [486, 376, .78, 1], [726, 390, .84, 0]]
+        .map(([x, y, s, t]) => portBush(x, y, s, t)).join("")}
+      ${rocks.map(([x, y, s]) => portRock(x, y, s)).join("")}
+      ${blooms.map(([x, y, c]) => `<circle cx="${x}" cy="${y}" r="2.1" fill="${c}" opacity=".9"/>`).join("")}
+      ${portButterfly(300, 646, "#FF8A6B", 0)}${portButterfly(956, 604, "#F7C948", -2.4)}${portButterfly(654, 692, "#FFF1C9", -4.2)}
+      ${boardwalk}
+      ${portCrane(168, 758, .95, false)}${portCrane(1032, 758, .95, true)}
+      <g fill="none" stroke="#FFFDF7" stroke-width="1.3" opacity=".3">
+        <ellipse cx="104" cy="594" rx="32" ry="7"/><ellipse cx="118" cy="602" rx="20" ry="4"/>
+        <ellipse cx="1104" cy="596" rx="27" ry="6"/><ellipse cx="272" cy="786" rx="22" ry="5"/>
+      </g>
+      ${portBoat(104, 580, 1.1, false)}${portBoat(1104, 582, .95, true)}${portBoat(272, 772, .8, false)}
+      ${[["#FF8A6B", 344, 244], ["#F7C948", 870, 250], ["#FFF1C9", 1006, 366]].map(([c, x, y]) => `<g transform="translate(${x} ${y})"><ellipse cx="0" cy="3" rx="7" ry="2.6" fill="#12201C" opacity=".14"/><circle r="4.4" fill="${c}" stroke="#12201C" stroke-width="1"/><path d="M0 -4v-6" stroke="#12201C" stroke-width="1"/></g>`).join("")}
+    </g>`;
+  }
+
+  function portRoof(provider, w, d, h, color, warn) {
+    const ink = "#12201C";
+    const light = mixHex(color, "#FFFFFF", .3);
+    const beacon = `<circle cx="${(w * .3).toFixed(1)}" cy="${(-h + 7).toFixed(1)}" r="3" fill="${warn ? "#FF4B2B" : "#C8F169"}" stroke="${ink}" stroke-width="1"/>`;
+    const dish = `<g transform="translate(${(-w * .2).toFixed(1)} ${(-h - 2).toFixed(1)})">
+      <path d="M0 0v-9" stroke="${ink}" stroke-width="1.6"/>
+      <g transform="rotate(-16 0 -13)"><ellipse cx="0" cy="-13" rx="10.5" ry="4.4" fill="#FFFDF7" stroke="${ink}" stroke-width="1.1"/><path d="M-4 -13h7" stroke="${ink}" stroke-width=".8" opacity=".5"/></g>
+      <circle cx="0" cy="-17" r="1.6" fill="#FF4B2B"/>
+    </g>`;
+    const dome = `<g transform="translate(0 ${(-h + 1).toFixed(1)})">
+      <path d="M-17 0a17 15 0 0 1 34 0z" fill="${light}" stroke="${ink}" stroke-width="1.2" stroke-linejoin="round"/>
+      <path d="M-17 0c5 4 29 4 34 0" fill="none" stroke="${ink}" stroke-width="1" opacity=".28"/>
+      <path d="M0 -15v-7" stroke="${ink}" stroke-width="1.4"/>
+      <circle cx="0" cy="-24" r="2.6" fill="#C8F169" stroke="${ink}" stroke-width="1"/>
+    </g>`;
+    const smoke = (x, y) => `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">
+      <path d="M-5 0v-15h10v15" fill="${light}" stroke="${ink}" stroke-width="1.1"/>
+      <circle class="port-puff" cx="0" cy="-19" r="3" fill="#FFFDF7"/>
+      <circle class="port-puff" cx="2.5" cy="-25" r="4.2" fill="#FFFDF7" style="animation-delay:-1.4s"/>
+      <circle class="port-puff" cx="-1.5" cy="-32" r="5.2" fill="#FFFDF7" style="animation-delay:-2.7s"/>
+    </g>`;
+    const vents = `<g transform="translate(0 ${(-h - 2).toFixed(1)})" stroke="${ink}" stroke-width="1.1">
+      <path d="M-15 0h30M-12 -5h24M-9 -10h18" opacity=".5"/>
+      <path d="M11 0v-11h10v11" fill="${light}" stroke-width="1.2"/>
+    </g>${smoke(w * .22, -h + 2)}`;
+    const kind = {
+      codex: "dish", openrouter: "dish", claude: "dome",
+      antigravity: "dome", gemini: "dome", nvidia: "vents",
+    }[provider] || "chimney";
+    const body = kind === "dish" ? dish : kind === "dome" ? dome : kind === "vents" ? vents : smoke(w * .24, -h + 2);
+    return body + beacon;
   }
 
   function portAiNode(p, slot, idx) {
@@ -930,17 +1472,18 @@
     const conn = (state.snap?.connections || []).find((c) => c.provider === p.provider);
     const warn = conn && conn.status !== "active";
     const on = portSelected("ai", p.provider);
-    const size = idx === 0 ? 1.14 : 1;
-    const w = 116 * size, d = 56 * size, h = (76 + Math.min(38, Number(p.share) * .5)) * size;
-    const antenna = `<path d="M0 ${-h - d / 2}V${-h - d / 2 - 24}" stroke="#12201C" stroke-width="1.4"/>
-      <circle cx="0" cy="${-h - d / 2 - 27}" r="3.2" fill="${warn ? "#FF4B2B" : "#C8F169"}" stroke="#12201C" stroke-width="1"/>`;
+    const size = idx === 0 ? 1.12 : 1;
+    const share = Number(p.share) || 0;
+    const w = 124 * size, d = 60 * size, h = (62 + Math.min(64, share * .95)) * size;
     const active = Number(today.tokens) > 0;
+    const roof = portRoof(p.provider, w, d, h, meta.color, warn);
     return `<g class="port-node ai${on ? " on" : ""}${warn ? " warn" : ""}" data-act="port-select" data-kind="ai" data-key="${esc(p.provider)}" tabindex="0" role="button" aria-label="${esc(meta.name)}, ${esc(tr("port.roleAiName"))} ${esc(meta.vendor)}, ${pct(p.share, 0)} ${esc(tr("port.shareOfUse"))}">
       <title>${esc(meta.name)} · ${esc(meta.vendor)} · ${compact(p.tokens)} tokens</title>
       <g transform="translate(${slot.x} ${slot.y})">
         <ellipse class="port-plate" cx="0" cy="${d / 2 + 10}" rx="${w * .74}" ry="${d * .42}"/>
+        ${active ? `<ellipse class="port-pulse" cx="0" cy="${d / 2 + 8}" rx="${w * .82}" ry="${d * .58}"/>` : ""}
         ${on ? `<ellipse class="port-ring" cx="0" cy="${d / 2 + 6}" rx="${w * .92}" ry="${d * .66}"/>` : ""}
-        ${portIsoBox(w, d, h, meta.color, { extra: antenna, glow: active })}
+        ${portIsoBox(w, d, h, meta.color, { extra: roof, glow: active, dense: true, rows: [0.16, 0.36, 0.56, 0.76] })}
         <g class="port-flag" style="--pc:${meta.color}"><path d="M${w / 2} ${-h - 16}v18"/><path d="M${w / 2} ${-h - 16}h16l-4 5 4 5h-16z"/></g>
         <text class="port-name" y="${d / 2 + 36}" text-anchor="middle">${esc(meta.name)}</text>
         <text class="port-role" y="${d / 2 + 51}" text-anchor="middle">${esc(meta.vendor).toUpperCase()} · ${pct(p.share, 0)}</text>
@@ -956,41 +1499,59 @@
     const router = S?.router || {};
     const conns = (S?.connections || []).filter((c) => c.status === "active").length;
     const signal = S?.meta?.sources?.find((s) => s.key === "router")?.status === "ok";
-    const tower = `<g transform="translate(0 -62)">
-      ${portIsoBox(66, 44, 60, "#2C6157", { rows: [0.3, 0.62], extra: `<path d="M0 -60V-84" stroke="#12201C" stroke-width="1.6"/><circle class="port-beacon" cx="0" cy="-88" r="19"/><circle cx="0" cy="-88" r="14" fill="#C8F169" stroke="#12201C" stroke-width="1.6"/><text x="0" y="-82.5" text-anchor="middle" class="port-nine">9</text>` })}
+    const tower = `<g transform="translate(0 -66)">
+      ${portIsoBox(72, 48, 66, "#2C6157", { rows: [0.3, 0.62], extra: `<path d="M0 -66V-90" stroke="#12201C" stroke-width="1.6"/><circle class="port-beacon" cx="0" cy="-94" r="19"/><circle cx="0" cy="-94" r="14" fill="#C8F169" stroke="#12201C" stroke-width="1.6"/><text x="0" y="-88.5" text-anchor="middle" class="port-nine">9</text>` })}
     </g>`;
     return `<g class="port-node source${on ? " on" : ""}" data-act="port-select" data-kind="source" data-key="9router" tabindex="0" role="button" aria-label="${esc(tr("port.sourceAria"))}">
       <title>9router · ${esc(tr("port.sourceTag"))} · ${conns} ${esc(tr("port.connections"))}</title>
       <g transform="translate(${PORT_LAYOUT.source.x} ${PORT_LAYOUT.source.y})">
-        <ellipse class="port-harbor" cx="0" cy="18" rx="168" ry="62"/>
-        <ellipse class="port-harbor-line" cx="0" cy="18" rx="136" ry="47"/>
-        ${on ? `<ellipse class="port-ring strong" cx="0" cy="16" rx="176" ry="70"/>` : ""}
-        ${portIsoBox(212, 108, 62, "#245A50", { rows: [0.3, 0.62], glow: signal })}
+        <ellipse class="port-harbor" cx="0" cy="18" rx="182" ry="67"/>
+        <ellipse class="port-harbor-line" cx="0" cy="18" rx="148" ry="51"/>
+        ${on ? `<ellipse class="port-ring strong" cx="0" cy="16" rx="190" ry="75"/>` : ""}
+        ${portIsoBox(226, 114, 66, "#245A50", { rows: [0.3, 0.62], glow: signal })}
         ${tower}
-        <path class="port-crane" d="M-104 20v-70h34M96 20v-52h-28" stroke="#12201C" stroke-width="2" fill="none"/>
-        <path class="port-crane" d="M-104 -50v10M96 -32v8" stroke="#12201C" stroke-width="4" stroke-linecap="round"/>
+        <path class="port-crane" d="M-112 20v-70h34M104 20v-52h-28" stroke="#12201C" stroke-width="2" fill="none"/>
+        <path class="port-crane" d="M-112 -50v10M104 -32v8" stroke="#12201C" stroke-width="4" stroke-linecap="round"/>
         <text class="port-name" y="104" text-anchor="middle">9router</text>
         <text class="port-role" y="120" text-anchor="middle">${esc(tr("port.sourceRole"))}</text>
         <text class="port-stat" y="136" text-anchor="middle">${esc(tr("port.connShort", { n: conns, c: router.combos?.length || 0 }))}</text>
-        <rect class="port-hit" x="-184" y="-210" width="368" height="360"/>
+        <rect class="port-hit" x="-196" y="-220" width="392" height="380"/>
+      </g>
+    </g>`;
+  }
+
+  function portToolRoof(tool, w, d, h) {
+    const ink = "#12201C";
+    if (!tool.installed) {
+      return `<g transform="translate(${(-w * .18).toFixed(1)} ${(-h - 2).toFixed(1)})">
+        <path d="M-7 0v-8h14v8" fill="#DED6C4" stroke="${ink}" stroke-width="1"/>
+        <path d="M-9 -8h18" stroke="${ink}" stroke-width="1.2"/>
+        <circle cx="8" cy="-3" r="2" fill="#F4F0E5" stroke="#8F8778" stroke-width=".9"/>
+      </g>`;
+    }
+    return `<g>
+      <path d="M${(-w * .3).toFixed(1)} ${(-h + 1).toFixed(1)}l10 -5 10 5-10 5z" fill="#FFF4CE" stroke="${ink}" stroke-width="1" stroke-linejoin="round"/>
+      <g transform="translate(${(w * .2).toFixed(1)} ${(-h - 2).toFixed(1)})">
+        <path d="M0 0v-9" stroke="${ink}" stroke-width="1.2"/>
+        <circle cx="0" cy="-11" r="2.1" fill="#C8F169" stroke="${ink}" stroke-width=".9"/>
       </g>
     </g>`;
   }
 
   function portToolNode(tool, slot) {
     const on = portSelected("tool", tool.key);
-    const w = 62, d = 34, h = 42;
+    const w = 74, d = 40, h = 52;
     const color = tool.installed ? "#3E6B5A" : "#BDB6A4";
-    const flag = tool.installed ? `<path d="M${w / 2} ${-h - 10}v16" stroke="#12201C" stroke-width="1.3"/><path d="M${w / 2} ${-h - 10}h13l-3 4.5 3 4.5h-13z" fill="${color}" stroke="#12201C" stroke-width="1"/>` : `<circle cx="0" cy="${-h - 18}" r="4" fill="#F4F0E5" stroke="#8F8778" stroke-width="1.2"/><path d="M0 ${-h - 18}v-5" stroke="#8F8778" stroke-width="1.2"/>`;
+    const flag = tool.installed ? `<path d="M${w / 2} ${-h - 10}v18" stroke="#12201C" stroke-width="1.3"/><path d="M${w / 2} ${-h - 10}h15l-3.4 5 3.4 5h-15z" fill="${color}" stroke="#12201C" stroke-width="1"/>` : `<circle cx="0" cy="${-h - 18}" r="4.4" fill="#F4F0E5" stroke="#8F8778" stroke-width="1.2"/><path d="M0 ${-h - 18}v-5" stroke="#8F8778" stroke-width="1.2"/>`;
     return `<g class="port-node tool${on ? " on" : ""}${tool.installed ? " live" : " off"}" data-act="port-select" data-kind="tool" data-key="${esc(tool.key)}" tabindex="0" role="button" aria-label="${esc(tool.name)}, ${esc(tr("port.toolTag"))} ${esc(tool.installed ? tr("port.installed") : tr("port.missing"))}">
       <title>${esc(tool.name)} · ${esc(tool.installed ? tr("port.installed") : tr("port.missing"))}</title>
       <g transform="translate(${slot.x} ${slot.y})">
-        <ellipse class="port-plate" cx="0" cy="${d / 2 + 8}" rx="40" ry="13"/>
-        ${on ? `<ellipse class="port-ring" cx="0" cy="${d / 2 + 5}" rx="52" ry="22"/>` : ""}
-        ${portIsoBox(w, d, h, color, { cols: 0.7, rows: [0.3, 0.64], extra: flag, glow: tool.installed })}
-        <text class="port-name small" y="${d / 2 + 28}" text-anchor="middle">${esc(tool.name)}</text>
-        <text class="port-role" y="${d / 2 + 42}" text-anchor="middle">${esc((tool.installed ? tr("port.installed") : tr("port.missing")).toUpperCase())}</text>
-        <rect class="port-hit" x="-54" y="${-h - 40}" width="108" height="${h + d + 100}"/>
+        <ellipse class="port-plate" cx="0" cy="${d / 2 + 9}" rx="46" ry="15"/>
+        ${on ? `<ellipse class="port-ring" cx="0" cy="${d / 2 + 6}" rx="58" ry="25"/>` : ""}
+        ${portIsoBox(w, d, h, color, { cols: 0.7, rows: [0.28, 0.6], extra: flag + portToolRoof(tool, w, d, h), glow: tool.installed })}
+        <text class="port-name small" y="${d / 2 + 30}" text-anchor="middle">${esc(tool.name)}</text>
+        <text class="port-role" y="${d / 2 + 45}" text-anchor="middle">${esc((tool.installed ? tr("port.installed") : tr("port.missing")).toUpperCase())}</text>
+        <rect class="port-hit" x="-60" y="${-h - 44}" width="120" height="${h + d + 106}"/>
       </g>
     </g>`;
   }
@@ -1017,6 +1578,7 @@
       const active = Number(S.today?.providers?.[p.provider]?.tokens || 0) > 0;
       const d = `M${slot.x} ${slot.y + 14} C${slot.x} ${slot.y - 34} 600 ${450} 600 468`;
       roads.push(portRoad(d, meta.color, active));
+      if (active) roads.push(portTruck(d, meta.color, (8.6 + i * 1.5).toFixed(1), (-(i * 2.7)).toFixed(1)));
     });
     tools.forEach((tool, i) => {
       const slot = PORT_LAYOUT.tool[i];
@@ -1026,10 +1588,10 @@
 
     $("#portRoads").innerHTML = portGround() + roads.join("");
     $("#portBuildings").innerHTML = nodes.map((n) => n.html).join("");
-    applyPortCamera();
     renderPortHud();
     renderPortInspector();
     renderPortList();
+    applyPortCamera();
   }
 
   function renderPortHud() {
@@ -1052,10 +1614,10 @@
     $("#dockFree").textContent = free != null ? pct(free, 0) : "—";
     const set = (sel, text) => { const el = $(sel); if (el) el.textContent = text; };
     set("#portManualLabel", tr("port.manual"));
+    set("#portHintText", tr("port.hint"));
     set("#portLegendSource", tr("port.legendSource"));
     set("#portLegendAi", tr("port.legendAi"));
     set("#portLegendTool", tr("port.legendTool"));
-    set("#portHint", tr("port.hint"));
     set("#dockTokensLabel", tr("port.dockToday"));
     set("#dockCostLabel", tr("port.dockCost"));
     set("#dockCostSub", tr("port.dockToday"));
@@ -1092,6 +1654,23 @@
           <span><b>${esc(next.label)}</b><em>${esc(next.detail)}</em></span><i>→</i>
         </button>`
       : `<button class="ins-action" data-act="wing" data-key="fluxo"><span><b>${esc(tr("port.nextFlow"))}</b><em>${esc(tr("port.nextFlowSub"))}</em></span><i>→</i></button>`;
+    const series = (S.series || []).slice(-7);
+    const peak = Math.max(1, ...series.map((s) => s.tokens || 0));
+    const todayKey = String(S.meta?.now || "").slice(0, 10);
+    const rhythm = series.length
+      ? `<div class="ins-block ins-rhythm">
+          <span class="ins-label">${esc(tr("port.rhythm"))}</span>
+          <div class="rhythm">
+            ${series.map((s) => {
+              const h = Math.max(5, Math.round(((s.tokens || 0) / peak) * 100));
+              const isToday = s.date === todayKey;
+              return `<div class="rhythm-col${isToday ? " today" : ""}" title="${esc(s.label)} · ${compact(s.tokens || 0)} ${esc(tr("common.tokens"))} · ${int(s.requests || 0)} ${esc(tr("port.rhythmCalls"))}">
+                <i style="--h:${h}%"></i><span>${esc(s.weekday || "")}</span>
+              </div>`;
+            }).join("")}
+          </div>
+        </div>`
+      : "";
     return `<div class="ins-head">
         <span class="ins-eyebrow">${esc(tr("common.today")).toUpperCase()} · ${String(d.getDate()).padStart(2, "0")} ${monthShort(d).toUpperCase()}</span>
         <span class="ins-status ${bad ? "warn" : "ok"}"><i></i>${esc(bad ? tr("port.attention") : tr("port.collecting"))}</span>
@@ -1104,8 +1683,9 @@
         <div><span>${esc(tr("common.calls"))}</span><b>${int(t.requests || 0)}</b></div>
         <div><span>${esc(tr("common.cache"))}</span><b>${pct(S.totals?.cacheHit || 0)}</b></div>
         <div><span>${esc(tr("port.headroom"))}</span><b>${free != null ? pct(free, 0) : "—"}</b></div>
-        <div><span>${esc(tr("common.model"))}</span><b>${esc(modelName(S.insights?.topModel?.model) || "—")}</b></div>
+        <div><span>${esc(tr("common.model"))}</span><b class="is-model">${esc(modelName(S.insights?.topModel?.model) || "—")}</b></div>
       </div>
+      ${rhythm}
       <div class="ins-block">
         <span class="ins-label">${esc(tr("port.nextAction"))}</span>
         ${nextAction}
@@ -1230,17 +1810,26 @@
     if (!world || !vp) return;
     const p = state.port;
     const rect = vp.getBoundingClientRect();
-    const aspect = rect.width / Math.max(1, rect.height);
-    // O dock flutua sobre o mapa no desktop; abre espaço para os rótulos não ficarem sob ele.
+    if (!rect.width || !rect.height) return;
+    const hud = $(".port-hud");
     const dock = $(".port-dock");
-    const dockOverlay = Boolean(dock && getComputedStyle(dock).position === "absolute");
-    const contentW = dockOverlay ? 1160 : 1060;
-    const contentH = 800;
-    const h = Math.max(contentH, contentW / aspect) / p.k;
-    const w = h * aspect;
-    p.cx = w >= 1200 ? 600 : clamp(p.cx, w / 2, 1200 - w / 2);
-    p.cy = h >= 1000 ? 540 : clamp(p.cy, h / 2, 1000 - h / 2);
-    world.setAttribute("viewBox", `${(p.cx - w / 2).toFixed(1)} ${(p.cy - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
+    const overlays = (el) => Boolean(el && getComputedStyle(el).position === "absolute");
+    // A cena é enquadrada só na faixa livre entre o HUD e o dock.
+    const topPad = overlays(hud) ? Math.max(0, hud.getBoundingClientRect().bottom - rect.top) + 14 : 10;
+    const bottomPad = overlays(dock) ? Math.max(0, rect.bottom - dock.getBoundingClientRect().top) + 14 : 10;
+    const freeH = Math.max(240, rect.height - topPad - bottomPad);
+    const narrow = rect.width < 620;
+    const contentW = narrow ? 900 : 1070;
+    const contentH = narrow ? 700 : 770;
+    const scale = Math.max(contentW / rect.width, contentH / freeH);
+    const vbW = (rect.width * scale) / p.k;
+    const vbH = (rect.height * scale) / p.k;
+    p.cx = vbW >= 1240 ? 600 : clamp(p.cx, vbW / 2 - 80, 1280 - vbW / 2);
+    p.cy = vbH >= 1080 ? 500 : clamp(p.cy, vbH / 2 - 90, 1090 - vbH / 2);
+    const bandCenter = (topPad + freeH / 2) / rect.height;
+    const x = p.cx - vbW / 2;
+    const y = p.cy - bandCenter * vbH;
+    world.setAttribute("viewBox", `${x.toFixed(1)} ${y.toFixed(1)} ${vbW.toFixed(1)} ${vbH.toFixed(1)}`);
   }
 
   function portZoom(factor) {
@@ -1278,6 +1867,9 @@
     });
     vp.addEventListener("pointermove", (ev) => {
       if (!drag) return;
+      if (Math.abs(ev.clientX - drag.x) + Math.abs(ev.clientY - drag.y) > 10) {
+        $("#portHint")?.classList.add("is-hidden");
+      }
       const rect = vp.getBoundingClientRect();
       const unit = 1200 / state.port.k / Math.max(1, rect.width);
       state.port.cx = drag.cx - (ev.clientX - drag.x) * unit;
@@ -1288,6 +1880,14 @@
     vp.addEventListener("pointerup", stop);
     vp.addEventListener("pointercancel", stop);
     window.addEventListener("resize", applyPortCamera);
+    window.addEventListener("resize", applyUiScale);
+    // O HUD, o dock e as fontes mudam de altura depois do primeiro render:
+    // reenquadra a cena sempre que a faixa livre mudar.
+    document.fonts?.ready?.then(() => applyPortCamera());
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(() => applyPortCamera());
+      [vp, $(".port"), $(".port-hud"), $(".port-dock"), $("#inspector")].forEach((el) => el && ro.observe(el));
+    }
     vp.addEventListener("wheel", (ev) => {
       if (window.innerWidth < 900) return;
       ev.preventDefault();
