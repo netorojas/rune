@@ -66,7 +66,7 @@ O Rune já tem o começo certo: ⌘K (`app.js:3670-3700`), tour de cinco passos 
 7. **Retenção quase zero.** `data.json` é sobrescrito a cada coleta (`collector/collect.py:726-729`). O resultado da sonda já persiste em `.rune-data/fleet.json` (`0600`), mas guarda apenas o último estado por rota — sem série. Não há tendência, comparação anual ou prova de consumo passado.
 8. **A sonda só conhece rotas codificadas.** `OWNER_META` tem 12 entradas fixas (`server.py:597-610`); uma conexão nova no 9router responde "rota desconhecida". O laço tenta até 4 modelos por rota. O SLO também é recortado pelas últimas 5.000 requisições (`server.py:300`), não pelos 7 dias completos. O README já documenta `/api/probe` e `/api/fleet`.
 9. **~~POST local sem checagem de origem.~~ Corrigido.** `/api/refresh` e `/api/probe` agora comparam `Origin` com `Host` e recusam `403` quando não batem (`_same_origin`); curl e scripts locais sem `Origin` continuam funcionando.
-10. **`/metrics` caro e com moeda fixa.** Cada scrape remonta o snapshot inteiro (`server.py:1056-1057`), incluindo SQL do Qoder. As métricas de custo se chamam `_brl` sem verificar a moeda de origem (`server.py:1069`, `1080`). E os assets são servidos com `no-store` (`server.py:1248`), então cada reload baixa mais de 600 KB.
+10. **~~`/metrics` caro e com moeda fixa.~~ Corrigido em parte.** O scrape agora reaproveita o corpo por 20 s (`RUNE_METRICS_TTL`), e as métricas passaram a `rune_cost_today_usd` / `rune_provider_cost_usd` depois de descobrir que o 9router grava custo em USD — o painel exibia USD como BRL e ainda dividia pela taxa. A base agora é USD, a conversão acontece só na exibição e os orçamentos antigos são migrados uma vez. Falta cachear os assets: o `no-store` ainda faz cada reload baixar mais de 600 KB.
 
 ## 6. Roadmap priorizado
 
@@ -79,13 +79,13 @@ Os primeiros itens são os que fazem alguém pagar: prova de orquestração, or�
 | 3 | Persistir o resultado da sonda por rota (último OK, código, latência, quando) | alto | M | Feito: `.rune-data/fleet.json` 0600 | Servidor grava o último estado e o painel hidrata no boot; falta virar série histórica e alerta |
 | 4 | Orçamento por projeto | alto | M | Não | Só global e por provedor (`app.js:319`); projetos já têm caminho e sessões, falta custo |
 | 5 | Exportação contábil mensal (CSV/PDF por projeto e modelo) | alto | P | Parcial: CSV diário por provedor | O CSV atual (`app.js:3239`) não fecha um mês nem serve para reembolso |
-| 6 | Instalador de um comando (brew/pipx/uvx) + launchd | alto | M | Não | `git clone` + `run.sh` não é produto instalável, e sem launchd não há painel sempre ligado |
+| 6 | Instalador de um comando (brew/pipx/uvx) + launchd | alto | M | Feito: `./install.sh` + launchd | O serviço sobe no login, reinicia se cair e aponta para o clone; falta empacotar em brew/pipx |
 | 7 | Alertas nativos no macOS + webhook | alto | P | Não | Alerta só dentro da aba (`app.js:2351-2371`); com o painel fechado, o orçamento estoura sem aviso |
 | 8 | Modo equipe opcional (perfis locais, custo por operador) | alto | G | Não | Um operador só (`server.py:120-132`); é o que destrava compra por time sem virar SaaS |
 | 9 | Retenção local de 12 meses (SQLite do Rune) | alto | G | Não | Sem histórico não há tendência, auditoria anual ou comparação de custo por projeto |
 | 10 | Testes de contrato do `/api/snapshot` + CI | médio | M | Feito: 18 testes + workflow | Mudança de schema agora quebra o CI, não a tela do usuário |
 | 11 | Lint de i18n e remoção de PT fixo | médio | P | Feito: `tests/test_i18n.mjs` no CI | Chave ausente ou variável divergente reprova o push |
-| 12 | Cache do `/metrics` e moeda explícita | médio | P | Não | Scrape a cada 15 s remonta o snapshot; `_brl` fixo engana quem integra com Grafana |
+| 12 | Cache do `/metrics` e moeda explícita | médio | P | Feito: TTL de 20 s + custo em USD | Custo em USD corrige a leitura de gasto; o cache tira o snapshot do caminho de cada scrape |
 
 ## 7. Fontes
 

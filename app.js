@@ -25,17 +25,16 @@
   const int = (v) => nfFor({ maximumFractionDigits: 0 }).format(Math.round(Number(v) || 0));
   const pct = (v, digits = 1) => `${dec(v, digits)}%`;
   const CURRENCIES = { BRL: "R$", USD: "$", EUR: "€" };
-  const toDisplay = (v) => {
-    const n = Number(v) || 0;
-    if (state.currency === "BRL") return n;
-    const rate = Number(state.rates?.[state.currency]) || 1;
-    return n / rate;
+  // O 9router grava custo em USD. As taxas guardadas são "quantos BRL valem 1 USD/EUR".
+  const ratePerUsd = (code) => {
+    const brl = Number(state.rates.USD) > 0 ? Number(state.rates.USD) : 1;
+    if (code === "USD") return 1;
+    if (code === "BRL") return brl;
+    const local = Number(state.rates[code]) > 0 ? Number(state.rates[code]) : brl;
+    return brl / local;
   };
-  const fromDisplay = (v) => {
-    const n = Number(v) || 0;
-    if (state.currency === "BRL") return n;
-    return n * (Number(state.rates?.[state.currency]) || 1);
-  };
+  const toDisplay = (v) => (Number(v) || 0) * ratePerUsd(state.currency);
+  const fromDisplay = (v) => (Number(v) || 0) / ratePerUsd(state.currency);
   const money = (v) => {
     const opts = { style: "currency", currency: state.currency, minimumFractionDigits: 2, maximumFractionDigits: 2 };
     try { return nfFor(opts).format(toDisplay(v)); }
@@ -326,6 +325,25 @@
     probes: {},
     probingAll: false,
   };
+
+  // A base de custo passou de "BRL presumido" para USD, como o 9router grava.
+  // Orçamentos antigos são convertidos uma única vez para manter o mesmo valor exibido.
+  if (store.get("costBase") !== "USD") {
+    if (state.budgets.global || Object.keys(state.budgets.providers).length) {
+      const brl = ratePerUsd("BRL");
+      const providers = {};
+      Object.entries(state.budgets.providers).forEach(([key, value]) => {
+        providers[key] = Math.round((value / brl) * 100) / 100;
+      });
+      state.budgets = normalizeBudgets({
+        ...state.budgets,
+        global: state.budgets.global ? state.budgets.global / brl : null,
+        providers,
+      });
+      store.set("budgets", state.budgets);
+    }
+    store.set("costBase", "USD");
+  }
 
   const railIcon = (key) => {
     const svg = document.querySelector(`.rail-btn[data-wing="${key}"] svg`);
@@ -2289,9 +2307,10 @@
     const today = S.today;
     const freeShare = t.tokens ? ((S.insights?.freeTokensEstimate || 0) / t.tokens) * 100 : 0;
     const reviewed = Math.min(2, state.reviewed.size);
+    const dailyCap = 1; // US$ 1/dia, a base em que o 9router registra custo
     return [
       { id: "cache", title: tr("quests.cacheTitle"), sub: tr("quests.cacheSub", { pct: pct(t.cacheHit) }), progress: clamp((t.cacheHit / 65) * 100), done: t.cacheHit >= 65, xp: 60 },
-      { id: "budget", title: tr("quests.budgetTitle", { limit: money(5) }), sub: tr("quests.budgetSub", { cost: money(today.cost) }), progress: clamp(today.cost <= 5 ? 100 : (5 / today.cost) * 100), done: today.cost <= 5, xp: 50 },
+      { id: "budget", title: tr("quests.budgetTitle", { limit: money(dailyCap) }), sub: tr("quests.budgetSub", { cost: money(today.cost) }), progress: clamp(today.cost <= dailyCap ? 100 : (dailyCap / today.cost) * 100), done: today.cost <= dailyCap, xp: 50 },
       { id: "errors", title: tr("quests.errorsTitle"), sub: tr("quests.errorsSub", { n: reviewed }), progress: clamp((reviewed / 2) * 100), done: reviewed >= 2, xp: 70 },
       { id: "free", title: tr("quests.freeTitle"), sub: tr("quests.freeSub", { pct: pct(freeShare) }), progress: clamp((freeShare / 25) * 100), done: freeShare >= 25, xp: 60 },
       { id: "explore", title: tr("quests.exploreTitle"), sub: tr("quests.exploreSub", { n: Math.min(3, state.visited.size) }), progress: clamp((state.visited.size / 3) * 100), done: state.visited.size >= 3, xp: 30 },
@@ -3285,8 +3304,8 @@
     const S = state.snap;
     if (!S) return;
     const providers = (S.providers || []).map((p) => p.provider);
-    const head = ["date", "requests", "tokens", "input", "cached", "cost_brl",
-      ...providers.flatMap((p) => [`${p}_tokens`, `${p}_requests`, `${p}_cost_brl`])];
+    const head = ["date", "requests", "tokens", "input", "cached", "cost_usd",
+      ...providers.flatMap((p) => [`${p}_tokens`, `${p}_requests`, `${p}_cost_usd`])];
     const lines = [head.join(",")];
     (S.series || []).forEach((d) => {
       lines.push([
@@ -3299,7 +3318,7 @@
       ].join(","));
     });
     lines.push("");
-    lines.push("provider,requests,tokens,cost_brl,p50_ms,p95_ms,ttft_p50_ms,error_rate_pct");
+    lines.push("provider,requests,tokens,cost_usd,p50_ms,p95_ms,ttft_p50_ms,error_rate_pct");
     (S.providers || []).forEach((p) => {
       const slo = (S.slo?.providers || []).find((x) => x.provider === p.provider) || {};
       lines.push([p.provider, p.requests, p.tokens, Number(p.cost || 0).toFixed(4), slo.p50 || "", slo.p95 || "", slo.ttftP50 || "", slo.errorRate ?? ""].join(","));

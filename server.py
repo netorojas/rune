@@ -1174,7 +1174,7 @@ def prometheus_metrics() -> str:
     _metric(lines, "rune_snapshot_timestamp_seconds", "gauge", "Unix time of this snapshot.", [(None, int(time.time()))])
     _metric(lines, "rune_tokens_today", "gauge", "Tokens consumed today.", [(None, int(today.get("tokens") or 0))])
     _metric(lines, "rune_requests_today", "gauge", "Requests made today.", [(None, int(today.get("requests") or 0))])
-    _metric(lines, "rune_cost_today_brl", "gauge", "Estimated cost today in BRL.", [(None, round(float(today.get("cost") or 0), 6))])
+    _metric(lines, "rune_cost_today_usd", "gauge", "Estimated cost today in USD (9router base).", [(None, round(float(today.get("cost") or 0), 6))])
     _metric(lines, "rune_cache_hit_ratio", "gauge", "Share of input tokens served from cache (0-1).", [(None, round(float(totals.get("cacheHit") or 0) / 100, 4))])
     _metric(lines, "rune_errors_open", "gauge", "Grouped error diagnostics in the window.", [(None, len(snap.get("errors") or []))])
     for key in ("router_age", "collector_age", "qoder_age"):
@@ -1185,7 +1185,7 @@ def prometheus_metrics() -> str:
             [({"provider": p.get("provider")}, int(p.get("tokens") or 0)) for p in snap.get("providers") or []])
     _metric(lines, "rune_provider_requests", "gauge", "Requests per provider in the window.",
             [({"provider": p.get("provider")}, int(p.get("requests") or 0)) for p in snap.get("providers") or []])
-    _metric(lines, "rune_provider_cost_brl", "gauge", "Estimated cost per provider in BRL.",
+    _metric(lines, "rune_provider_cost_usd", "gauge", "Estimated cost per provider in USD (9router base).",
             [({"provider": p.get("provider")}, round(float(p.get("cost") or 0), 6)) for p in snap.get("providers") or []])
     _metric(lines, "rune_provider_share_ratio", "gauge", "Token share per provider (0-1).",
             [({"provider": p.get("provider")}, round(float(p.get("share") or 0) / 100, 4)) for p in snap.get("providers") or []])
@@ -1343,6 +1343,26 @@ def security_audit() -> dict:
     }
 
 
+_metrics_lock = threading.Lock()
+_metrics_cache: dict = {"at": 0.0, "body": ""}
+try:
+    METRICS_TTL = max(0.0, float(os.environ.get("RUNE_METRICS_TTL", "20")))
+except ValueError:
+    METRICS_TTL = 20.0
+
+
+def metrics_body() -> str:
+    """Prometheus bate a cada 15 s; o snapshot é caro, então o corpo é reaproveitado por alguns segundos."""
+    now = time.time()
+    with _metrics_lock:
+        if _metrics_cache["body"] and now - _metrics_cache["at"] < METRICS_TTL:
+            return _metrics_cache["body"]
+    body = prometheus_metrics()
+    with _metrics_lock:
+        _metrics_cache.update({"at": now, "body": body})
+    return body
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "rune-live/0.1"
 
@@ -1402,7 +1422,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"ok": False, "error": "falha na auditoria", "detail": _clean(str(exc), 200)})
         elif path == "/metrics":
             try:
-                body = prometheus_metrics().encode("utf-8")
+                body = metrics_body().encode("utf-8")
             except Exception as exc:  # noqa: BLE001
                 self._json(500, {"error": "falha ao gerar métricas", "detail": _clean(str(exc), 200)})
                 return

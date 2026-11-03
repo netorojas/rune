@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -263,7 +265,7 @@ class MetricsTests(unittest.TestCase):
             "rune_up 1",
             "rune_tokens_today 10",
             "rune_requests_today 2",
-            "rune_cost_today_brl 0.25",
+            "rune_cost_today_usd 0.25",
             "rune_cache_hit_ratio 0.5",
             "rune_errors_open 0",
             "rune_router_age_seconds 5",
@@ -279,6 +281,15 @@ class MetricsTests(unittest.TestCase):
 
     def test_escape_label(self):
         self.assertEqual(server._escape_label('a"b\\c\nd'), 'a\\"b\\\\c d')
+
+    def test_metrics_body_is_cached(self):
+        with mock.patch.object(server, "_metrics_cache", {"at": 0.0, "body": ""}), \
+                mock.patch.object(server, "METRICS_TTL", 60.0), \
+                mock.patch.object(server, "prometheus_metrics", return_value="rune_up 1\n") as build:
+            first = server.metrics_body()
+            second = server.metrics_body()
+        self.assertEqual(first, second)
+        self.assertEqual(build.call_count, 1)
 
 
 class FleetPersistenceTests(unittest.TestCase):
@@ -330,6 +341,47 @@ class FleetPersistenceTests(unittest.TestCase):
         (self.dir / "fleet.json").write_text("{not json", encoding="utf-8")
         with mock.patch.object(server, "FLEET_FILE", self.dir / "fleet.json"):
             self.assertEqual(server._load_fleet_state(), {})
+
+
+class InstallerTests(unittest.TestCase):
+    def _run(self, *args, **env_overrides):
+        env = {
+            **os.environ,
+            "RUNE_PYTHON": sys.executable,
+            "RUNE_PORT": "8899",
+            **env_overrides,
+        }
+        return subprocess.run(["bash", str(ROOT / "install.sh"), *args],
+                              capture_output=True, text=True, env=env)
+
+    def test_print_plist_is_a_valid_launchd_job(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            proc = self._run("--print-plist", HOME=raw,
+                             AI_USAGE_HOME=str(home / "ai-usage"),
+                             RUNE_LOGS=str(home / "logs"))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            plist = plistlib.loads(proc.stdout.encode("utf-8"))
+        self.assertEqual(plist["Label"], "com.netorojas.rune")
+        self.assertEqual(plist["ProgramArguments"], [sys.executable, str(ROOT / "server.py")])
+        self.assertEqual(plist["WorkingDirectory"], str(ROOT))
+        self.assertEqual(plist["EnvironmentVariables"]["RUNE_PORT"], "8899")
+        self.assertEqual(plist["EnvironmentVariables"]["AI_USAGE_HOME"], str(home / "ai-usage"))
+        self.assertEqual(plist["EnvironmentVariables"]["RUNE_NO_OPEN"], "1")
+        self.assertTrue(plist["RunAtLoad"])
+        self.assertIs(plist["KeepAlive"], True)
+        self.assertEqual(plist["StandardOutPath"], str(home / "logs" / "rune.out.log"))
+
+    def test_rejects_invalid_port(self):
+        proc = self._run("--print-plist", RUNE_PORT="abc")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("RUNE_PORT", proc.stderr)
+
+    def test_help_documents_the_three_actions(self):
+        proc = self._run("--help")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for flag in ("--print-plist", "--uninstall"):
+            self.assertIn(flag, proc.stdout)
 
 
 class IndexWiringTests(unittest.TestCase):

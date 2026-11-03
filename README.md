@@ -45,11 +45,11 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 
 - **Frota viva** lida do 9router em `/v1/models`: cada IA plugada, quantos modelos ela tem, contexto máximo e capacidades (visão, ferramentas, raciocínio, gratuito).
 - **Sonda de orquestração** ("Testar rotas"): prova com uma chamada de 1 token se a rota responde de verdade, sem depender do que o catálogo promete. O resultado fica em `.rune-data/fleet.json` (`0600`) e sobrevive ao reload; o número "X de 11 rotas respondem" aparece no dock do Atlas.
-- **Orçamentos** em BRL, USD ou EUR, com limite global, limite por provedor e marcador de alerta (60–90%).
+- **Orçamentos** em BRL, USD ou EUR, com limite global, limite por provedor e marcador de alerta (60–90%). O custo-base é USD, como o 9router grava; a conversão acontece só na exibição e no formulário.
 - **Motor de alertas** para orçamento estourado, cota baixa, cache abaixo da meta, erros e coleta parada.
 - **SLO por provedor** na janela de 7 dias: p50, p95, tempo até o primeiro token e taxa de erro.
-- **Exportação CSV** com série diária e resumo por provedor.
-- **Endpoint Prometheus** em `/metrics` para plugar no Grafana.
+- **Exportação CSV** com série diária e resumo por provedor, em `cost_usd`.
+- **Endpoint Prometheus** em `/metrics` (`rune_cost_today_usd`, `rune_provider_cost_usd`) com cache de 20 s para não remontar o snapshot a cada scrape.
 - **Auditoria local** de permissões de arquivo, segredos em texto, exposição do 9router e exigência de API key.
 - **Manual "Como jogar"** em 5 passos, com checklist ao vivo do que já está funcionando.
 - **Idiomas** PT-BR, EN e ES, com troca imediata e moeda BRL/USD/EUR (taxas editáveis).
@@ -79,6 +79,18 @@ Se você já usa o coletor em `~/.ai-usage`:
 AI_USAGE_HOME="$HOME/.ai-usage" python3 server.py
 ```
 
+### Instalar como serviço (macOS)
+
+```bash
+./install.sh
+```
+
+O instalador registra um agente `launchd` de usuário (`com.netorojas.rune`) apontando para este clone: o painel sobe no login, reinicia se cair e grava logs em `~/Library/Logs/Rune`. Não usa `sudo`, não copia o código e não mexe no 9router.
+
+- Atualizar: `git pull && ./install.sh`
+- Remover o serviço: `./install.sh --uninstall` (dados, logs e o clone ficam)
+- Conferir o plist sem instalar: `./install.sh --print-plist`
+
 ### Testes
 
 ```bash
@@ -98,6 +110,7 @@ O CI em `.github/workflows/ci.yml` roda os mesmos comandos a cada push e pull re
 | `AI_USAGE_HOME` | `~/.ai-usage` | Onde ficam `data.json`, `config.json` e o coletor. |
 | `RUNE_NO_OPEN` | vazio | Defina `1` para o `run.sh` não abrir o navegador. |
 | `RUNE_OPERATOR` | nome do sistema | Como o Rune chama você (também editável no Perfil). |
+| `RUNE_METRICS_TTL` | `20` | Segundos de cache do `/metrics` (o snapshot é caro; Prometheus bate a cada 15 s). |
 
 ## API local
 
@@ -195,7 +208,7 @@ cd rune
 ./run.sh
 ```
 
-Requires macOS, Python 3.10+ and a local 9router database at `~/.9router/db/data.sqlite`. The dashboard runs at `http://127.0.0.1:8770`.
+Requires macOS, Python 3.10+ and a local 9router database at `~/.9router/db/data.sqlite`. The dashboard runs at `http://127.0.0.1:8770`. Run `./install.sh` to register a per-user launchd agent so the panel starts at login and restarts if it crashes.
 
 ### Privacy contract
 

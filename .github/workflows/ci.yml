@@ -25,10 +25,11 @@ jobs:
       - name: Contratos do servidor
         run: python -m unittest discover -s tests -v
 
-      - name: Sintaxe do painel
+      - name: Sintaxe do painel e do instalador
         run: |
           node --check app.js
           node --check i18n.js
+          bash -n install.sh
 
       - name: Cobertura i18n
         run: node tests/test_i18n.mjs
