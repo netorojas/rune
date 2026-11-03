@@ -3,11 +3,11 @@
 **Central local-first de controle do seu uso de IA.**
 Tokens, custo, cota, saúde, orçamento e diagnóstico — sem conta, sem nuvem, sem enviar seus dados para lugar nenhum.
 
-Rune lê metadados locais do [9router](https://github.com/9router), do Qoder Desktop e do coletor `~/.ai-usage`, e transforma tudo em um painel vivo com dez alas: Atlas, Fluxo, Sessões, Oficina, Oráculo, Biblioteca, Diário, Guilda, Perfil e Ajuda.
+Rune lê metadados locais do [9router](https://github.com/9router), do Qoder Desktop e do coletor `~/.ai-usage`, e transforma tudo em um porto 3D explorável com dez alas: Atlas, Fluxo, Sessões, Oficina, Oráculo, Biblioteca, Diário, Guilda, Perfil e Ajuda.
 
 > **Status:** alpha funcional. Feito para macOS; o coletor e o servidor usam caminhos locais e podem ser adaptados para Linux/Windows.
 
-![Painel do Rune no Atlas](docs/screenshot.png)
+![Porto Rune: mapa 3D com fonte, IAs e ferramentas](docs/screenshot.png)
 
 [English](#english) · [Começar](#começar) · [Privacidade](#privacidade) · [Contribuir](#contribuir)
 
@@ -28,7 +28,7 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 
 | Área | O que você vê e faz |
 |---|---|
-| **Atlas** | Visão geral viva: faixa de cota Codex/Claude, KPIs, frota de provedores, consumo por hora, missões, radar de risco e chamadas ao vivo. |
+| **Atlas** | Porto 3D navegável: a fonte (9router), as IAs e as ferramentas instaladas, cada uma com seu papel. Clique numa construção para ver o que ela faz, sua fatia de uso e a próxima ação. |
 | **Fluxo** | Consumo por dia/hora, projeção do mês, orçamento global e por provedor. |
 | **Sessões** | Chamadas recentes, projetos, latência, status e diagnóstico por provedor. |
 | **Oficina** | Inventário de CLIs/apps, skills, artefatos e sinais de desperdício. |
@@ -47,6 +47,7 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 - **Exportação CSV** com série diária e resumo por provedor.
 - **Endpoint Prometheus** em `/metrics` para plugar no Grafana.
 - **Auditoria local** de permissões de arquivo, segredos em texto, exposição do 9router e exigência de API key.
+- **Manual "Como jogar"** em 5 passos, com checklist ao vivo do que já está funcionando.
 - **Idiomas** PT-BR, EN e ES, com troca imediata e moeda BRL/USD/EUR (taxas editáveis).
 
 ## Começar
@@ -128,7 +129,7 @@ Qoder Desktop (main.sqlite)┘                              │
 - `collector/collect.py`: coleta metadados de uso, cota, inventário e projetos.
 - `app.js`: runtime do painel, dez alas, orçamento, alertas, missões/XP, i18n e câmbio.
 - `i18n.js`: dicionários PT/EN/ES.
-- `styles.css`: identidade Skyline, faixa de céu, shell responsivo, temas dia/crepúsculo e componentes.
+- `styles.css`: identidade editorial, porto 3D explorável, shell responsivo, temas dia/crepúsculo e componentes.
 
 ## Segurança
 
@@ -150,11 +151,14 @@ Leia [CONTRIBUTING.md](CONTRIBUTING.md). Issues e Discussions são o canal da co
 
 ### Why
 
-AI costs are split across providers, models, subscriptions and keys. Rune turns local metadata from 9router, Qoder Desktop and the `~/.ai-usage` collector into one live dashboard.
+AI costs are split across providers, models, subscriptions and keys. Rune turns local metadata from 9router, Qoder Desktop and the `~/.ai-usage` collector into an explorable 3D port with ten functional wings.
+
+The Atlas separates the source (9router, the local router — not an AI), the AIs that answer and the tools where you work. Click any building to see its role, usage share and next action. A five-step "How to play" manual shows how to wire your AI tools into the panel with a live checklist.
 
 ### Features
 
 - Ten functional wings: overview, flow, sessions, workshop, local assistant, fleet manual, changelog, community, profile and help.
+- Navigable 3D Atlas plus a five-step interactive manual with live collection checks.
 - Global and per-provider budgets with forecast and threshold alerts.
 - 7-day SLOs: p50, p95, time to first token and error rate.
 - CSV export and a Prometheus `/metrics` endpoint.

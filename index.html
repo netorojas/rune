@@ -10,7 +10,7 @@
 <body>
 <div class="holder" id="holder">
   <div class="stage" id="stage">
-    <div class="app" id="app" data-light="day" data-focus="">
+    <div class="app port-shell" id="app" data-light="day" data-focus="">
 
       <div class="scene">
         <div class="sky-img" id="skyImg"></div>
@@ -144,7 +144,75 @@
         </button>
       </aside>
 
-      <main class="dashboard">
+      <main class="dashboard port-dashboard">
+        <section class="port" id="port" aria-label="Porto Rune — mapa da sua operação">
+          <div class="port-scenery" aria-hidden="true">
+            <span class="port-sun"></span>
+            <span class="port-cloud pc1"></span>
+            <span class="port-cloud pc2"></span>
+            <span class="port-cloud pc3"></span>
+            <span class="port-ridge pr1"></span>
+            <span class="port-ridge pr2"></span>
+          </div>
+
+          <div class="port-viewport" id="portViewport" tabindex="0" aria-label="Mapa interativo. Arraste para explorar; use as setas para mover e mais ou menos para aproximar.">
+            <svg class="port-world" id="portWorld" viewBox="0 0 1200 1000" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fonte, IAs e ferramentas do seu ambiente">
+              <defs>
+                <linearGradient id="portSea" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#DCEAE2"/>
+                  <stop offset="1" stop-color="#EFE7D5"/>
+                </linearGradient>
+                <linearGradient id="portShore" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#E8DFC8"/>
+                  <stop offset="1" stop-color="#DCD2B8"/>
+                </linearGradient>
+              </defs>
+              <g id="portRoads" aria-hidden="true"></g>
+              <g id="portBuildings"></g>
+            </svg>
+          </div>
+
+          <header class="port-hud">
+            <div class="port-hud-copy">
+              <span class="port-kicker" id="portKicker">PORTO RUNE · 03 NOV</span>
+              <h1 id="portHeadline">Tudo no lugar.</h1>
+              <p id="portSub">Lendo os dados locais…</p>
+            </div>
+            <button class="port-btn primary" data-act="manual">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.2a2.6 2.6 0 015 1.1c0 1.7-2.6 1.9-2.6 3.5"/><circle cx="12" cy="17.2" r=".9" fill="currentColor"/></svg>
+              <span id="portManualLabel">Como jogar</span>
+            </button>
+          </header>
+
+          <div class="port-legend" aria-label="Legenda do mapa">
+            <span><i class="lg lg-source"></i><em id="portLegendSource">Fonte</em></span>
+            <span><i class="lg lg-ai"></i><em id="portLegendAi">IAs</em></span>
+            <span><i class="lg lg-tool"></i><em id="portLegendTool">Ferramentas</em></span>
+          </div>
+
+          <div class="port-zoom" role="group" aria-label="Câmera do mapa">
+            <button data-act="port-zoom-in" aria-label="Aproximar" title="Aproximar">+</button>
+            <button data-act="port-zoom-out" aria-label="Afastar" title="Afastar">−</button>
+            <button data-act="port-reset" aria-label="Recentralizar" title="Recentralizar">◎</button>
+          </div>
+
+          <div class="port-hint" id="portHint">arraste para explorar · clique em uma construção</div>
+
+          <div class="port-dock">
+            <div class="dock-metrics">
+              <div class="dock-metric"><span id="dockTokensLabel">hoje</span><b id="dockTokens">—</b><em>tokens</em></div>
+              <div class="dock-metric"><span id="dockCostLabel">custo</span><b id="dockCost">—</b><em id="dockCostSub">hoje</em></div>
+              <div class="dock-metric"><span id="dockFreeLabel">folga</span><b id="dockFree">—</b><em id="dockFreeSub">semana</em></div>
+            </div>
+            <button class="dock-action" data-act="wing" data-key="fluxo"><span id="dockActionLabel">Ver fluxo</span> <span>→</span></button>
+          </div>
+
+          <div class="port-list" id="portList" aria-label="Versão em lista do mapa"></div>
+        </section>
+
+        <aside class="inspector" id="inspector" aria-live="polite"></aside>
+
+        <div class="atlas-legacy" hidden>
         <section class="hero" id="hero">
           <div class="hero-copy">
             <div class="hero-meta">
@@ -260,9 +328,10 @@
           </div>
           <div class="radar" id="radar"></div>
         </section>
+        </div>
       </main>
 
-      <aside class="cockpit" aria-label="Cockpit de controle">
+      <aside class="cockpit" aria-label="Cockpit de controle" hidden>
         <div class="cockpit-head">
           <div>
             <span class="eyebrow">COCKPIT</span>
@@ -279,7 +348,7 @@
         <div class="panes" id="panes"></div>
       </aside>
 
-      <div class="pip" id="pipCompanion" role="button" tabindex="0" aria-label="Pip — abrir assistente">
+      <div class="pip" id="pipCompanion" role="button" tabindex="0" aria-label="Pip — abrir assistente" hidden>
         <span class="pip-tip" id="pipTip">Sua folga está em 68%. Quer um plano de 3 ações?</span>
         <span class="pip-spark" aria-hidden="true">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z"/></svg>
@@ -308,7 +377,7 @@
         </div>
       </div>
 
-      <footer class="ticker">
+      <footer class="ticker" hidden>
         <span class="ticker-label">PULSO</span>
         <div class="ticker-track"><div class="ticker-row" id="tickerRow"></div></div>
         <span class="ticker-hint" id="tickerHint">v0.1 · local</span>
@@ -362,6 +431,23 @@
             <button class="primary" id="tourNext">Próximo</button>
           </div>
         </div>
+      </div>
+
+      <div class="manual" id="manual" hidden>
+        <div class="manual-scrim" data-act="manual-close"></div>
+        <section class="manual-sheet" role="dialog" aria-modal="true" aria-labelledby="manualTitle">
+          <header class="manual-head">
+            <div class="manual-head-copy">
+              <span class="manual-eyebrow" id="manualEyebrow">MANUAL · 5 PASSOS</span>
+              <h2 id="manualTitle">Como jogar</h2>
+            </div>
+            <div class="manual-head-right">
+              <span class="manual-live" id="manualLive"><i></i>status ao vivo</span>
+              <button class="manual-close" data-act="manual-close" aria-label="Fechar manual">×</button>
+            </div>
+          </header>
+          <div class="manual-body" id="manualBody"></div>
+        </section>
       </div>
 
       <div class="toasts" id="toasts" aria-live="polite"></div>

@@ -320,6 +320,9 @@
     security: null,
     securityLoading: false,
     operator: store.get("operator", ""),
+    port: { cx: 600, cy: 540, k: 1, selected: null, movedAt: 0 },
+    manualStep: 0,
+    manualReturn: null,
   };
 
   const railIcon = (key) => {
@@ -328,7 +331,7 @@
   };
 
   const WINGS = {
-    atlas: { eyebrow: "CÉU", title: "Atlas", sub: "A visão geral da sua operação de IA." },
+    atlas: { eyebrow: "PORTO", title: "Atlas", sub: "O mapa vivo da sua operação de IA." },
     fluxo: { eyebrow: "ALA 01", title: "Fluxo", sub: "Consumo, projeção e orçamento em uma linha do tempo viva." },
     sessoes: { eyebrow: "ALA 02", title: "Sessões", sub: "Cada chamada, cada projeto, cada contexto — com diagnóstico." },
     oficina: { eyebrow: "ALA 03", title: "Oficina", sub: "Skills, artefatos e o desperdício que ninguém vê." },
@@ -353,6 +356,7 @@
     bindChrome();
     bindDelegates();
     bindKeyboard();
+    initPortCamera();
     initTour();
     applyShellTranslations();
     loadSnapshot();
@@ -404,13 +408,14 @@
     renderBand();
     renderTicker();
     renderPipTip();
+    renderPort();
     if (state.wing) renderWing(state.wing, { preserve: true });
 
     if (first) {
       state.doneSet = new Set(state.quests.filter((q) => q.done).map((q) => q.id));
       state.ready = true;
       if (!store.get("tourSeen", false) && !location.search.includes("notour")) {
-        setTimeout(() => { if (!state.wing && $("#drawer").hidden) startTour(); }, 1500);
+        setTimeout(() => { if (!state.wing && $("#drawer").hidden && $("#manual").hidden) openManual(0); }, 1300);
       }
     }
   }
@@ -829,6 +834,618 @@
       </button>`;
     }).join("");
     fleet.classList.toggle("has-focus", Boolean(state.focus));
+  }
+
+  /* ---------------------------------------------------------- porto */
+
+  const PORT_LAYOUT = {
+    source: { x: 600, y: 432 },
+    ai: [
+      { x: 392, y: 320 },
+      { x: 808, y: 320 },
+      { x: 262, y: 522 },
+      { x: 938, y: 522 },
+    ],
+    tool: [
+      { x: 288, y: 806 },
+      { x: 444, y: 826 },
+      { x: 600, y: 834 },
+      { x: 756, y: 826 },
+      { x: 912, y: 806 },
+    ],
+  };
+
+  function portProviders() {
+    const rows = (state.snap?.providers || []).filter((p) => Number(p.tokens) > 0);
+    return (rows.length ? rows : (state.snap?.providers || [])).slice(0, 4);
+  }
+
+  function portTools() {
+    const inv = state.snap?.inventory || {};
+    const hasCli = (name) => Boolean((inv.clis || []).find((c) => c.name === name)?.installed);
+    return [
+      { key: "qoder", name: "Qoder", kind: "app", installed: Boolean(inv.qoder?.installed), source: "Qoder Desktop", noteKey: "port.tool.qoderNote" },
+      { key: "codex", name: "Codex CLI", kind: "cli", installed: Boolean(inv.codex?.installed) || hasCli("Codex CLI"), source: "9router", noteKey: "port.tool.codexNote" },
+      { key: "claude-code", name: "Claude Code", kind: "cli", installed: hasCli("Claude Code"), source: "9router", noteKey: "port.tool.claudeNote" },
+      { key: "gemini-cli", name: "Gemini CLI", kind: "cli", installed: hasCli("Gemini CLI"), source: "9router", noteKey: "port.tool.geminiNote" },
+      { key: "opencode", name: "OpenCode", kind: "cli", installed: hasCli("OpenCode"), source: "9router", noteKey: "port.tool.opencodeNote" },
+    ];
+  }
+
+  const portSelected = (kind, key) => state.port.selected?.kind === kind && state.port.selected?.key === key;
+
+  function portIsoBox(w, d, h, color, opts = {}) {
+    const ink = "#12201C";
+    const top = mixHex(color, "#FFFFFF", .42);
+    const left = mixHex(color, "#FFFFFF", .1);
+    const right = mixHex(color, "#0F1A15", .26);
+    const glass = "#F7F2E4";
+    let windows = "";
+    if (opts.windows !== false) {
+      const rows = opts.rows || [0.24, 0.5, 0.76];
+      rows.forEach((v) => {
+        const x = (w / 2) * (opts.cols || 0.56);
+        const y = -h + d / 2 + v * h;
+        windows += `<path d="M${x.toFixed(1)} ${y.toFixed(1)}l9 -4.4v7.2l-9 4.4z" fill="${glass}" opacity="${opts.glow ? .94 : .7}" stroke="${ink}" stroke-width=".6"/>`;
+        windows += `<path d="M${(-w / 2 + 12).toFixed(1)} ${(y + 4).toFixed(1)}l8 -4v6.4l-8 4z" fill="${right}" opacity=".28"/>`;
+      });
+    }
+    return `<g class="iso">
+      <ellipse cx="0" cy="${(d / 2 + 6).toFixed(1)}" rx="${(w * .62).toFixed(1)}" ry="${(d * .32).toFixed(1)}" fill="${ink}" opacity=".13"/>
+      <polygon points="${-w / 2},${-h} 0,${-h + d / 2} 0,${d / 2} ${-w / 2},0" fill="${left}" stroke="${ink}" stroke-width="1.4" stroke-linejoin="round"/>
+      <polygon points="0,${-h + d / 2} ${w / 2},${-h} ${w / 2},0 0,${d / 2}" fill="${right}" stroke="${ink}" stroke-width="1.4" stroke-linejoin="round"/>
+      <polygon points="0,${-h - d / 2} ${w / 2},${-h} 0,${-h + d / 2} ${-w / 2},${-h}" fill="${top}" stroke="${ink}" stroke-width="1.4" stroke-linejoin="round"/>
+      ${windows}
+      ${opts.extra || ""}
+    </g>`;
+  }
+
+  function portRoad(d, color, active) {
+    return `<path class="port-road-base" d="${d}"/>
+      <path class="port-road-line" d="${d}"/>
+      ${active ? `<path class="port-road-flow" d="${d}" style="stroke:${color}"/>` : ""}`;
+  }
+
+  function portGround() {
+    let waves = "";
+    for (let i = 0; i < 7; i++) {
+      const y = 590 + i * 52;
+      const x = i % 2 ? 40 : 140;
+      waves += `<path d="M${x} ${y}h${150 + i * 26}M${x + 210} ${y}h${90 + i * 20}" stroke="#B8CEC0" stroke-width="1.1" opacity="${.5 - i * .045}"/>`;
+    }
+    return `<rect x="-420" y="190" width="2040" height="940" fill="url(#portSea)"/>
+      <g stroke-linecap="round">${waves}</g>
+      <ellipse cx="600" cy="486" rx="416" ry="248" fill="url(#portShore)"/>
+      <ellipse cx="600" cy="486" rx="416" ry="248" fill="none" stroke="#C3B69A" stroke-width="1.4" opacity=".7"/>
+      <ellipse cx="600" cy="486" rx="356" ry="200" fill="none" stroke="#C9BE9F" stroke-width="1" opacity=".5"/>
+      <ellipse cx="600" cy="486" rx="292" ry="152" fill="none" stroke="#CEC4A6" stroke-width="1" opacity=".35" stroke-dasharray="3 9"/>
+      <path class="port-pier" d="M148 892 246 748h708l98 144z" fill="#E6DCC5" stroke="#C3B69A" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M190 866h820" stroke="#CFC3A7" stroke-width="1.2" stroke-dasharray="2 10" opacity=".8"/>
+    </g>`;
+  }
+
+  function portAiNode(p, slot, idx) {
+    const meta = provMeta(p.provider);
+    const today = state.snap?.today?.providers?.[p.provider] || {};
+    const conn = (state.snap?.connections || []).find((c) => c.provider === p.provider);
+    const warn = conn && conn.status !== "active";
+    const on = portSelected("ai", p.provider);
+    const size = idx === 0 ? 1.14 : 1;
+    const w = 116 * size, d = 56 * size, h = (76 + Math.min(38, Number(p.share) * .5)) * size;
+    const antenna = `<path d="M0 ${-h - d / 2}V${-h - d / 2 - 24}" stroke="#12201C" stroke-width="1.4"/>
+      <circle cx="0" cy="${-h - d / 2 - 27}" r="3.2" fill="${warn ? "#FF4B2B" : "#C8F169"}" stroke="#12201C" stroke-width="1"/>`;
+    const active = Number(today.tokens) > 0;
+    return `<g class="port-node ai${on ? " on" : ""}${warn ? " warn" : ""}" data-act="port-select" data-kind="ai" data-key="${esc(p.provider)}" tabindex="0" role="button" aria-label="${esc(meta.name)}, ${esc(tr("port.roleAiName"))} ${esc(meta.vendor)}, ${pct(p.share, 0)} ${esc(tr("port.shareOfUse"))}">
+      <title>${esc(meta.name)} · ${esc(meta.vendor)} · ${compact(p.tokens)} tokens</title>
+      <g transform="translate(${slot.x} ${slot.y})">
+        <ellipse class="port-plate" cx="0" cy="${d / 2 + 10}" rx="${w * .74}" ry="${d * .42}"/>
+        ${on ? `<ellipse class="port-ring" cx="0" cy="${d / 2 + 6}" rx="${w * .92}" ry="${d * .66}"/>` : ""}
+        ${portIsoBox(w, d, h, meta.color, { extra: antenna, glow: active })}
+        <g class="port-flag" style="--pc:${meta.color}"><path d="M${w / 2} ${-h - 16}v18"/><path d="M${w / 2} ${-h - 16}h16l-4 5 4 5h-16z"/></g>
+        <text class="port-name" y="${d / 2 + 36}" text-anchor="middle">${esc(meta.name)}</text>
+        <text class="port-role" y="${d / 2 + 51}" text-anchor="middle">${esc(meta.vendor).toUpperCase()} · ${pct(p.share, 0)}</text>
+        <text class="port-stat" y="${d / 2 + 66}" text-anchor="middle">${active ? tr("port.todayUse", { v: compact(today.tokens) }) : tr("port.noUseToday")}</text>
+        <rect class="port-hit" x="${-w * .95}" y="${-h - d - 40}" width="${w * 1.9}" height="${h + d + 128}"/>
+      </g>
+    </g>`;
+  }
+
+  function portSourceNode() {
+    const on = portSelected("source", "9router");
+    const S = state.snap;
+    const router = S?.router || {};
+    const conns = (S?.connections || []).filter((c) => c.status === "active").length;
+    const signal = S?.meta?.sources?.find((s) => s.key === "router")?.status === "ok";
+    const tower = `<g transform="translate(0 -62)">
+      ${portIsoBox(66, 44, 60, "#2C6157", { rows: [0.3, 0.62], extra: `<path d="M0 -60V-84" stroke="#12201C" stroke-width="1.6"/><circle class="port-beacon" cx="0" cy="-88" r="19"/><circle cx="0" cy="-88" r="14" fill="#C8F169" stroke="#12201C" stroke-width="1.6"/><text x="0" y="-82.5" text-anchor="middle" class="port-nine">9</text>` })}
+    </g>`;
+    return `<g class="port-node source${on ? " on" : ""}" data-act="port-select" data-kind="source" data-key="9router" tabindex="0" role="button" aria-label="${esc(tr("port.sourceAria"))}">
+      <title>9router · ${esc(tr("port.sourceTag"))} · ${conns} ${esc(tr("port.connections"))}</title>
+      <g transform="translate(${PORT_LAYOUT.source.x} ${PORT_LAYOUT.source.y})">
+        <ellipse class="port-harbor" cx="0" cy="18" rx="168" ry="62"/>
+        <ellipse class="port-harbor-line" cx="0" cy="18" rx="136" ry="47"/>
+        ${on ? `<ellipse class="port-ring strong" cx="0" cy="16" rx="176" ry="70"/>` : ""}
+        ${portIsoBox(212, 108, 62, "#245A50", { rows: [0.3, 0.62], glow: signal })}
+        ${tower}
+        <path class="port-crane" d="M-104 20v-70h34M96 20v-52h-28" stroke="#12201C" stroke-width="2" fill="none"/>
+        <path class="port-crane" d="M-104 -50v10M96 -32v8" stroke="#12201C" stroke-width="4" stroke-linecap="round"/>
+        <text class="port-name" y="104" text-anchor="middle">9router</text>
+        <text class="port-role" y="120" text-anchor="middle">${esc(tr("port.sourceRole"))}</text>
+        <text class="port-stat" y="136" text-anchor="middle">${esc(tr("port.connShort", { n: conns, c: router.combos?.length || 0 }))}</text>
+        <rect class="port-hit" x="-184" y="-210" width="368" height="360"/>
+      </g>
+    </g>`;
+  }
+
+  function portToolNode(tool, slot) {
+    const on = portSelected("tool", tool.key);
+    const w = 62, d = 34, h = 42;
+    const color = tool.installed ? "#3E6B5A" : "#BDB6A4";
+    const flag = tool.installed ? `<path d="M${w / 2} ${-h - 10}v16" stroke="#12201C" stroke-width="1.3"/><path d="M${w / 2} ${-h - 10}h13l-3 4.5 3 4.5h-13z" fill="${color}" stroke="#12201C" stroke-width="1"/>` : `<circle cx="0" cy="${-h - 18}" r="4" fill="#F4F0E5" stroke="#8F8778" stroke-width="1.2"/><path d="M0 ${-h - 18}v-5" stroke="#8F8778" stroke-width="1.2"/>`;
+    return `<g class="port-node tool${on ? " on" : ""}${tool.installed ? " live" : " off"}" data-act="port-select" data-kind="tool" data-key="${esc(tool.key)}" tabindex="0" role="button" aria-label="${esc(tool.name)}, ${esc(tr("port.toolTag"))} ${esc(tool.installed ? tr("port.installed") : tr("port.missing"))}">
+      <title>${esc(tool.name)} · ${esc(tool.installed ? tr("port.installed") : tr("port.missing"))}</title>
+      <g transform="translate(${slot.x} ${slot.y})">
+        <ellipse class="port-plate" cx="0" cy="${d / 2 + 8}" rx="40" ry="13"/>
+        ${on ? `<ellipse class="port-ring" cx="0" cy="${d / 2 + 5}" rx="52" ry="22"/>` : ""}
+        ${portIsoBox(w, d, h, color, { cols: 0.7, rows: [0.3, 0.64], extra: flag, glow: tool.installed })}
+        <text class="port-name small" y="${d / 2 + 28}" text-anchor="middle">${esc(tool.name)}</text>
+        <text class="port-role" y="${d / 2 + 42}" text-anchor="middle">${esc((tool.installed ? tr("port.installed") : tr("port.missing")).toUpperCase())}</text>
+        <rect class="port-hit" x="-54" y="${-h - 40}" width="108" height="${h + d + 100}"/>
+      </g>
+    </g>`;
+  }
+
+  function renderPort() {
+    const world = $("#portWorld");
+    if (!world || !state.snap) return;
+    const S = state.snap;
+    const providers = portProviders();
+    const tools = portTools();
+    const sel = state.port.selected;
+    if (sel?.kind === "ai" && !providers.some((p) => p.provider === sel.key)) state.port.selected = null;
+
+    const nodes = [];
+    providers.forEach((p, i) => nodes.push({ y: PORT_LAYOUT.ai[i].y, html: portAiNode(p, PORT_LAYOUT.ai[i], i) }));
+    nodes.push({ y: PORT_LAYOUT.source.y, html: portSourceNode() });
+    tools.forEach((t, i) => nodes.push({ y: PORT_LAYOUT.tool[i].y, html: portToolNode(t, PORT_LAYOUT.tool[i]) }));
+    nodes.sort((a, b) => a.y - b.y);
+
+    const roads = [];
+    providers.forEach((p, i) => {
+      const slot = PORT_LAYOUT.ai[i];
+      const meta = provMeta(p.provider);
+      const active = Number(S.today?.providers?.[p.provider]?.tokens || 0) > 0;
+      const d = `M${slot.x} ${slot.y + 14} C${slot.x} ${slot.y - 34} 600 ${450} 600 468`;
+      roads.push(portRoad(d, meta.color, active));
+    });
+    tools.forEach((tool, i) => {
+      const slot = PORT_LAYOUT.tool[i];
+      const d = `M${slot.x} ${slot.y - 18} C${slot.x} ${slot.y - 190} 600 ${slot.y - 170} 600 512`;
+      roads.push(portRoad(d, tool.installed ? "#2C6157" : "#B4AC99", tool.installed));
+    });
+
+    $("#portRoads").innerHTML = portGround() + roads.join("");
+    $("#portBuildings").innerHTML = nodes.map((n) => n.html).join("");
+    applyPortCamera();
+    renderPortHud();
+    renderPortInspector();
+    renderPortList();
+  }
+
+  function renderPortHud() {
+    const S = state.snap;
+    if (!S || !$("#portHeadline")) return;
+    const d = dateObj(S.meta?.now) || new Date();
+    $("#portKicker").textContent = `${tr("port.kicker")} · ${String(d.getDate()).padStart(2, "0")} ${monthShort(d).toUpperCase()}`;
+    const bad = (S.connections || []).filter((c) => c.status && c.status !== "active").length;
+    const headline = bad
+      ? tr(bad === 1 ? "port.attentionOne" : "port.attentionMany", { n: bad })
+      : Number(S.today?.requests) > 0 ? tr("port.good") : tr("port.empty");
+    $("#portHeadline").textContent = headline;
+    const ais = portProviders().length;
+    const tools = portTools().filter((t) => t.installed).length;
+    const age = Number(S.meta?.router_age || 0) + (Date.now() - state.loadedAt) / 1000;
+    $("#portSub").textContent = tr("port.sub", { ais, tools, ago: ago(age) });
+    $("#dockTokens").textContent = compact(S.today?.tokens || 0);
+    $("#dockCost").textContent = money(S.today?.cost || 0);
+    const free = S.quota?.codex?.available ? S.quota.codex.week_free : state.sunStates[0]?.pct;
+    $("#dockFree").textContent = free != null ? pct(free, 0) : "—";
+    const set = (sel, text) => { const el = $(sel); if (el) el.textContent = text; };
+    set("#portManualLabel", tr("port.manual"));
+    set("#portLegendSource", tr("port.legendSource"));
+    set("#portLegendAi", tr("port.legendAi"));
+    set("#portLegendTool", tr("port.legendTool"));
+    set("#portHint", tr("port.hint"));
+    set("#dockTokensLabel", tr("port.dockToday"));
+    set("#dockCostLabel", tr("port.dockCost"));
+    set("#dockCostSub", tr("port.dockToday"));
+    set("#dockFreeLabel", tr("port.dockFree"));
+    set("#dockFreeSub", tr("port.dockWeek"));
+    set("#dockActionLabel", tr("port.dockFlow"));
+  }
+
+  function portStatusFor(provider) {
+    const conn = (state.snap?.connections || []).find((c) => c.provider === provider);
+    if (!conn) return { tone: "none", label: tr("port.noConnection") };
+    if (conn.status === "active") return { tone: "ok", label: tr("port.connected") };
+    return { tone: "warn", label: conn.errorCode ? `${tr("port.attention")} · ${conn.errorCode}` : tr("port.attention") };
+  }
+
+  function renderPortInspector() {
+    const el = $("#inspector");
+    if (!el) return;
+    if (!state.snap) { el.innerHTML = `<div class="ins-loading"><i></i><span>${esc(tr("common.loading"))}</span></div>`; return; }
+    const sel = state.port.selected;
+    if (!sel) { el.innerHTML = portInspectorToday(); return; }
+    el.innerHTML = sel.kind === "source" ? portInspectorSource() : sel.kind === "ai" ? portInspectorAi(sel.key) : portInspectorTool(sel.key);
+  }
+
+  function portInspectorToday() {
+    const S = state.snap;
+    const t = S.today || {};
+    const next = recommendedActions()[0];
+    const free = S.quota?.codex?.available ? S.quota.codex.week_free : state.sunStates[0]?.pct;
+    const bad = (S.connections || []).filter((c) => c.status && c.status !== "active").length;
+    const d = dateObj(S.meta?.now) || new Date();
+    const nextAction = next
+      ? `<button class="ins-action" data-act="${esc(next.act || "wing")}"${next.wing ? ` data-key="${esc(next.wing)}"` : ""}>
+          <span><b>${esc(next.label)}</b><em>${esc(next.detail)}</em></span><i>→</i>
+        </button>`
+      : `<button class="ins-action" data-act="wing" data-key="fluxo"><span><b>${esc(tr("port.nextFlow"))}</b><em>${esc(tr("port.nextFlowSub"))}</em></span><i>→</i></button>`;
+    return `<div class="ins-head">
+        <span class="ins-eyebrow">${esc(tr("common.today")).toUpperCase()} · ${String(d.getDate()).padStart(2, "0")} ${monthShort(d).toUpperCase()}</span>
+        <span class="ins-status ${bad ? "warn" : "ok"}"><i></i>${esc(bad ? tr("port.attention") : tr("port.collecting"))}</span>
+      </div>
+      <h2 class="ins-title">${esc(tr("port.todayTitle"))}</h2>
+      <p class="ins-lead">${esc(tr("port.lead", { tokens: compact(t.tokens || 0), calls: int(t.requests || 0), cache: pct(S.totals?.cacheHit || 0) }))}</p>
+      <div class="ins-stats">
+        <div><span>${esc(tr("common.tokens"))}</span><b>${compact(t.tokens || 0)}</b></div>
+        <div><span>${esc(tr("common.cost"))}</span><b>${money(t.cost || 0)}</b></div>
+        <div><span>${esc(tr("common.calls"))}</span><b>${int(t.requests || 0)}</b></div>
+        <div><span>${esc(tr("common.cache"))}</span><b>${pct(S.totals?.cacheHit || 0)}</b></div>
+        <div><span>${esc(tr("port.headroom"))}</span><b>${free != null ? pct(free, 0) : "—"}</b></div>
+        <div><span>${esc(tr("common.model"))}</span><b>${esc(modelName(S.insights?.topModel?.model) || "—")}</b></div>
+      </div>
+      <div class="ins-block">
+        <span class="ins-label">${esc(tr("port.nextAction"))}</span>
+        ${nextAction}
+      </div>
+      <div class="ins-block">
+        <span class="ins-label">${esc(tr("port.roles"))}</span>
+        <div class="ins-roles">
+          <div><i class="lg lg-source"></i><span><b>9router</b><em>${esc(tr("port.roleSource"))}</em></span></div>
+          <div><i class="lg lg-ai"></i><span><b>${esc(tr("port.roleAiName"))}</b><em>${esc(tr("port.roleAi"))}</em></span></div>
+          <div><i class="lg lg-tool"></i><span><b>${esc(tr("port.roleToolName"))}</b><em>${esc(tr("port.roleTool"))}</em></span></div>
+        </div>
+      </div>
+      <p class="ins-note">${esc(tr("port.inspectorHint"))}</p>
+      <button class="ins-cta" data-act="manual">${esc(tr("port.howTo"))} <span>5 ${esc(tr("port.steps"))}</span></button>`;
+  }
+
+  function portInspectorSource() {
+    const S = state.snap;
+    const router = S.router || {};
+    const links = router.links || [];
+    const conns = S.connections || [];
+    const ok = conns.filter((c) => c.status === "active").length;
+    const link = links.find((l) => /9router/i.test(l.label)) || links[0];
+    return `<button class="ins-back" data-act="port-clear">← ${esc(tr("port.backMap"))}</button>
+      <div class="ins-head">
+        <span class="ins-mark source">9</span>
+        <span class="ins-tag source">${esc(tr("port.sourceTag"))}</span>
+      </div>
+      <h2 class="ins-title">9router</h2>
+      <p class="ins-lead">${esc(tr("port.sourceLead"))}</p>
+      <div class="ins-callout">${esc(tr("port.sourceCallout"))}</div>
+      <div class="ins-rows">
+        <div><span>${esc(tr("port.fallback"))}</span><b>${esc(router.fallback || "—")}</b></div>
+        <div><span>${esc(tr("port.combos"))}</span><b>${int(router.combos?.length || 0)}</b></div>
+        <div><span>${esc(tr("port.connections"))}</span><b>${ok}/${conns.length}</b></div>
+        <div><span>${esc(tr("port.tunnel"))}</span><b>${router.tunnel ? esc(tr("port.on")) : esc(tr("port.off"))}</b></div>
+        <div><span>${esc(tr("port.headroom"))}</span><b>${esc(router.headroom?.online ? tr("port.online") : tr("port.offline"))}</b></div>
+      </div>
+      <div class="ins-actions">
+        ${link ? `<button class="btn primary" data-act="open-url" data-url="${esc(link.url)}">${esc(tr("port.openRouter"))} ↗</button>` : ""}
+        <button class="btn ghost" data-act="wing" data-key="perfil">${esc(tr("port.seeConnections"))}</button>
+      </div>
+      <p class="ins-note">${esc(tr("port.privacy"))}</p>`;
+  }
+
+  function portInspectorAi(key) {
+    const S = state.snap;
+    const meta = provMeta(key);
+    const usage = (S.providers || []).find((p) => p.provider === key);
+    const today = S.today?.providers?.[key] || {};
+    const kb = knowledgeFor(key);
+    const status = portStatusFor(key);
+    return `<button class="ins-back" data-act="port-clear">← ${esc(tr("port.backMap"))}</button>
+      <div class="ins-head">
+        <span class="ins-mark" style="--pc:${meta.color}">${esc(meta.glyph)}</span>
+        <span class="ins-tag">IA · ${esc(meta.vendor)}</span>
+        <span class="ins-status ${status.tone}"><i></i>${esc(status.label)}</span>
+      </div>
+      <h2 class="ins-title">${esc(meta.name)}</h2>
+      <p class="ins-lead clamp">${esc(kb?.purpose || tr("port.aiLead"))}</p>
+      <div class="ins-stats four">
+        <div><span>${esc(tr("common.today"))}</span><b>${compact(today.tokens || 0)}</b></div>
+        <div><span>${esc(tr("common.calls"))}</span><b>${int(today.requests || 0)}</b></div>
+        <div><span>${esc(tr("common.cost"))}</span><b>${money(usage?.cost || 0)}</b></div>
+        <div><span>${esc(tr("port.share"))}</span><b>${pct(usage?.share || 0, 0)}</b></div>
+      </div>
+      <div class="ins-rows">
+        <div><span>${esc(tr("port.totalTokens"))}</span><b>${compact(usage?.tokens || 0)}</b></div>
+        <div><span>${esc(tr("port.via"))}</span><b>9router</b></div>
+        <div><span>${esc(tr("port.profile"))}</span><b>${esc(kb?.tag || "—")}</b></div>
+      </div>
+      <div class="ins-actions">
+        <button class="btn primary" data-act="provider-detail" data-key="${esc(key)}">${esc(tr("port.aiManual"))}</button>
+        <button class="btn ghost" data-act="focus-flow" data-key="${esc(key)}">${esc(tr("port.seeFlow"))}</button>
+      </div>
+      <p class="ins-note">${esc(tr("port.privacy"))}</p>`;
+  }
+
+  function portInspectorTool(key) {
+    const tool = portTools().find((t) => t.key === key);
+    if (!tool) return portInspectorToday();
+    const S = state.snap;
+    const sessions = key === "qoder" ? (S.qoder?.sessions?.length || 0) : null;
+    return `<button class="ins-back" data-act="port-clear">← ${esc(tr("port.backMap"))}</button>
+      <div class="ins-head">
+        <span class="ins-mark tool">${esc(tool.name.slice(0, 2).toUpperCase())}</span>
+        <span class="ins-tag tool">${esc(tr("port.toolTag"))}</span>
+        <span class="ins-status ${tool.installed ? "ok" : "warn"}"><i></i>${esc(tool.installed ? tr("port.installed") : tr("port.missing"))}</span>
+      </div>
+      <h2 class="ins-title">${esc(tool.name)}</h2>
+      <p class="ins-lead">${esc(tr("port.toolLead", { name: tool.name }))}</p>
+      <div class="ins-rows">
+        <div><span>${esc(tr("port.kind"))}</span><b>${tool.kind === "cli" ? "CLI" : "App"}</b></div>
+        <div><span>${esc(tr("port.readFrom"))}</span><b>${esc(tool.source)}</b></div>
+        ${sessions != null ? `<div><span>${esc(tr("port.sessions"))}</span><b>${int(sessions)}</b></div>` : ""}
+      </div>
+      <p class="ins-note">${esc(tr(tool.noteKey))}</p>
+      ${tool.installed
+        ? `<div class="ins-actions"><button class="btn primary" data-act="wing" data-key="sessoes">${esc(tr("port.seeSessions"))}</button></div>`
+        : `<div class="ins-callout">${esc(tr("port.toolMissingNote"))}</div>
+           <div class="ins-actions"><button class="btn primary" data-act="manual-step" data-step="2">${esc(tr("port.howToConnect"))}</button></div>`}
+      <p class="ins-note">${esc(tr("port.privacy"))}</p>`;
+  }
+
+  function renderPortList() {
+    const wrap = $("#portList");
+    if (!wrap || !state.snap) return;
+    const providers = portProviders();
+    const tools = portTools();
+    const row = (kind, key, dot, name, sub, value, cls = "") => `<button class="pl-row ${cls}" data-act="port-select" data-kind="${kind}" data-key="${esc(key)}">
+      <i class="${dot}"></i><span><b>${esc(name)}</b><em>${esc(sub)}</em></span><strong>${value}</strong><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
+    </button>`;
+    wrap.innerHTML = `
+      <div class="pl-group"><span>${esc(tr("port.sourceTag"))}</span>${row("source", "9router", "lg-source", "9router", tr("port.roleSource"), "")}</div>
+      <div class="pl-group"><span>${esc(tr("port.roleAiName"))}</span>${providers.map((p) => row("ai", p.provider, "lg-ai", provName(p.provider), provMeta(p.provider).vendor, compact(p.tokens))).join("")}</div>
+      <div class="pl-group"><span>${esc(tr("port.roleToolName"))}</span>${tools.map((t) => row("tool", t.key, "lg-tool", t.name, t.installed ? tr("port.installed") : tr("port.missing"), t.installed ? "✓" : "—", t.installed ? "live" : "off")).join("")}</div>`;
+  }
+
+  function applyPortCamera() {
+    const world = $("#portWorld");
+    const vp = $("#portViewport");
+    if (!world || !vp) return;
+    const p = state.port;
+    const rect = vp.getBoundingClientRect();
+    const aspect = rect.width / Math.max(1, rect.height);
+    // O dock flutua sobre o mapa no desktop; abre espaço para os rótulos não ficarem sob ele.
+    const dock = $(".port-dock");
+    const dockOverlay = Boolean(dock && getComputedStyle(dock).position === "absolute");
+    const contentW = dockOverlay ? 1160 : 1060;
+    const contentH = 800;
+    const h = Math.max(contentH, contentW / aspect) / p.k;
+    const w = h * aspect;
+    p.cx = w >= 1200 ? 600 : clamp(p.cx, w / 2, 1200 - w / 2);
+    p.cy = h >= 1000 ? 540 : clamp(p.cy, h / 2, 1000 - h / 2);
+    world.setAttribute("viewBox", `${(p.cx - w / 2).toFixed(1)} ${(p.cy - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
+  }
+
+  function portZoom(factor) {
+    state.port.k = Math.min(2.4, Math.max(1, state.port.k * factor));
+    applyPortCamera();
+  }
+
+  function portResetCamera() {
+    state.port.cx = 600;
+    state.port.cy = 540;
+    state.port.k = 1;
+    applyPortCamera();
+  }
+
+  function portSelect(kind, key) {
+    const p = state.port;
+    if (p.selected && p.selected.kind === kind && p.selected.key === key) p.selected = null;
+    else p.selected = { kind, key };
+    renderPort();
+    if (p.selected && window.matchMedia("(max-width: 900px)").matches) {
+      setTimeout(() => $("#inspector")?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+    }
+  }
+
+  function initPortCamera() {
+    const vp = $("#portViewport");
+    if (!vp || vp.dataset.ready) return;
+    vp.dataset.ready = "1";
+    let drag = null;
+    vp.addEventListener("pointerdown", (ev) => {
+      if (ev.target.closest?.("[data-act]")) return;
+      drag = { x: ev.clientX, y: ev.clientY, cx: state.port.cx, cy: state.port.cy };
+      vp.setPointerCapture?.(ev.pointerId);
+      vp.classList.add("dragging");
+    });
+    vp.addEventListener("pointermove", (ev) => {
+      if (!drag) return;
+      const rect = vp.getBoundingClientRect();
+      const unit = 1200 / state.port.k / Math.max(1, rect.width);
+      state.port.cx = drag.cx - (ev.clientX - drag.x) * unit;
+      state.port.cy = drag.cy - (ev.clientY - drag.y) * unit;
+      applyPortCamera();
+    });
+    const stop = () => { drag = null; vp.classList.remove("dragging"); };
+    vp.addEventListener("pointerup", stop);
+    vp.addEventListener("pointercancel", stop);
+    window.addEventListener("resize", applyPortCamera);
+    vp.addEventListener("wheel", (ev) => {
+      if (window.innerWidth < 900) return;
+      ev.preventDefault();
+      portZoom(ev.deltaY > 0 ? .9 : 1.12);
+    }, { passive: false });
+    vp.addEventListener("keydown", (ev) => {
+      const step = 46;
+      if (ev.key === "ArrowLeft") { state.port.cx -= step; applyPortCamera(); ev.preventDefault(); }
+      else if (ev.key === "ArrowRight") { state.port.cx += step; applyPortCamera(); ev.preventDefault(); }
+      else if (ev.key === "ArrowUp") { state.port.cy -= step; applyPortCamera(); ev.preventDefault(); }
+      else if (ev.key === "ArrowDown") { state.port.cy += step; applyPortCamera(); ev.preventDefault(); }
+      else if (ev.key === "+" || ev.key === "=") { portZoom(1.14); ev.preventDefault(); }
+      else if (ev.key === "-") { portZoom(.88); ev.preventDefault(); }
+      else if (ev.key === "0") { portResetCamera(); ev.preventDefault(); }
+    });
+    $("#portWorld").addEventListener("keydown", (ev) => {
+      const node = ev.target.closest?.(".port-node");
+      if (!node) return;
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        portSelect(node.dataset.kind, node.dataset.key);
+      }
+    });
+  }
+
+  /* ---------------------------------------------------------- manual */
+
+  const MANUAL_STEPS = [
+    { icon: "◎", titleKey: "manual.step1.title", textKey: "manual.step1.text" },
+    { icon: "⌁", titleKey: "manual.step2.title", textKey: "manual.step2.text" },
+    { icon: "⇄", titleKey: "manual.step3.title", textKey: "manual.step3.text" },
+    { icon: "✓", titleKey: "manual.step4.title", textKey: "manual.step4.text" },
+    { icon: "→", titleKey: "manual.step5.title", textKey: "manual.step5.text" },
+  ];
+
+  const MANUAL_COMMAND = "./run.sh";
+
+  function openManual(step = state.manualStep || 0) {
+    state.manualStep = clamp(step, 0, MANUAL_STEPS.length - 1);
+    const el = $("#manual");
+    if (!el) return;
+    if (el.hidden) state.manualReturn = document.activeElement;
+    renderManual();
+    el.hidden = false;
+    void el.offsetWidth;
+    el.classList.add("open");
+    store.set("tourSeen", true);
+    setTimeout(() => $(".manual-close")?.focus(), 40);
+  }
+
+  function closeManual() {
+    const el = $("#manual");
+    if (!el) return;
+    el.classList.remove("open");
+    const back = state.manualReturn;
+    state.manualReturn = null;
+    setTimeout(() => {
+      if (el.classList.contains("open")) return;
+      el.hidden = true;
+      if (back && back.isConnected) back.focus();
+    }, 220);
+  }
+
+  function manualChecks() {
+    const S = state.snap;
+    const tools = S ? portTools() : [];
+    return [
+      { ok: Boolean(S), label: tr("manual.check.server") },
+      { ok: Boolean(S && (S.meta?.sources || []).some((s) => s.key === "router" && s.status === "ok")), label: tr("manual.check.source") },
+      { ok: Boolean(S && Number(S.today?.requests) > 0), label: tr("manual.check.calls") },
+      { ok: tools.some((t) => t.installed), label: tr("manual.check.tool") },
+      { ok: Boolean(S && (S.providers || []).length > 0), label: tr("manual.check.first") },
+    ];
+  }
+
+  function manualVisual(step) {
+    if (step === 0) {
+      return `<div class="m-roles">
+        <div class="m-role tool"><i class="lg lg-tool"></i><b>${esc(tr("port.roleToolName"))}</b><span>${esc(tr("manual.roleTool"))}</span></div>
+        <span class="m-arrow">→</span>
+        <div class="m-role source"><i class="lg lg-source"></i><b>9router</b><span>${esc(tr("manual.roleSource"))}</span></div>
+        <span class="m-arrow">→</span>
+        <div class="m-role ai"><i class="lg lg-ai"></i><b>${esc(tr("port.roleAiName"))}</b><span>${esc(tr("manual.roleAi"))}</span></div>
+      </div>`;
+    }
+    if (step === 1) {
+      return `<div class="m-code"><code>${esc(MANUAL_COMMAND)}</code><button data-act="manual-copy">${esc(tr("manual.copy"))}</button></div>
+        <div class="m-note">${esc(tr("manual.sourceNote"))}</div>
+        <div class="m-flow-line"><span>127.0.0.1:8770</span><i></i><span>9router</span></div>`;
+    }
+    if (step === 2) {
+      return `<div class="m-routes">
+        <div class="m-route">
+          <span class="m-route-tag">${esc(tr("manual.routePrimary"))}</span>
+          <div class="m-chain">
+            <div><i class="lg lg-tool"></i><b>${esc(tr("manual.chainTool"))}</b></div>
+            <span>→</span>
+            <div><i class="lg lg-source"></i><b>9router</b></div>
+            <span>→</span>
+            <div><i class="lg lg-ai"></i><b>${esc(tr("manual.chainAi"))}</b></div>
+          </div>
+        </div>
+        <div class="m-route alt">
+          <span class="m-route-tag">${esc(tr("manual.routeFallback"))}</span>
+          <div class="m-chain compact">
+            <div class="m-pill">9router</div>
+            <span>→</span>
+            <div class="m-pill">${esc(tr("manual.routeNext"))}</div>
+            <span>→</span>
+            <div class="m-pill log">${esc(tr("manual.routeLog"))}</div>
+          </div>
+        </div>
+      </div>
+      <div class="m-note">${esc(tr("manual.routeNote"))}</div>`;
+    }
+    if (step === 3) {
+      const checks = manualChecks();
+      return `<div class="m-checks">${checks.map((c) => `<div class="${c.ok ? "ok" : ""}"><i>${c.ok ? "✓" : "·"}</i><span>${esc(c.label)}</span></div>`).join("")}</div>
+        <button class="btn ghost m-refresh" data-act="refresh">${esc(tr("manual.refresh"))}</button>`;
+    }
+    return `<div class="m-wings">
+      ${["fluxo", "sessoes", "ajuda"].map((k) => `<button data-act="wing" data-key="${k}"><b>${esc(tr(`nav.${k}`))}</b><span>${esc(tr(`guide.${k}`))}</span><i>→</i></button>`).join("")}
+    </div>`;
+  }
+
+  function renderManual() {
+    const body = $("#manualBody");
+    if (!body) return;
+    const step = state.manualStep;
+    const item = MANUAL_STEPS[step];
+    const checks = manualChecks();
+    const done = checks.filter((c) => c.ok).length;
+    $("#manualEyebrow").textContent = `${tr("manual.eyebrow")} · ${step + 1}/${MANUAL_STEPS.length}`;
+    body.innerHTML = `
+      <div class="manual-grid">
+        <nav class="manual-steps" aria-label="${esc(tr("manual.stepsLabel"))}">
+          ${MANUAL_STEPS.map((s, i) => `<button class="manual-step${i === step ? " on" : ""}${checks[i]?.ok ? " done" : ""}" data-act="manual-step" data-step="${i}" aria-current="${i === step}" aria-label="${esc(tr(s.titleKey))}">
+            <i>${s.icon}</i><span><b>${esc(tr(s.titleKey))}</b><em>${esc(tr(`manual.step${i + 1}.short`))}</em></span>
+          </button>`).join("")}
+          <div class="manual-progress"><span>${esc(tr("manual.liveProgress"))}</span><b>${done}/${checks.length}</b><div><i style="width:${(done / checks.length) * 100}%"></i></div></div>
+        </nav>
+        <section class="manual-stage">
+          <span class="manual-stage-kicker">${esc(tr("manual.step"))} ${String(step + 1).padStart(2, "0")}</span>
+          <h3>${esc(tr(item.titleKey))}</h3>
+          <p>${esc(tr(item.textKey))}</p>
+          <div class="manual-visual">${manualVisual(step)}</div>
+          <div class="manual-foot">
+            <button class="btn ghost" data-act="manual-prev"${step === 0 ? " disabled" : ""}>← ${esc(tr("common.back"))}</button>
+            <span>${esc(tr("manual.privacy"))}</span>
+            <button class="btn primary" data-act="${step === MANUAL_STEPS.length - 1 ? "manual-close" : "manual-next"}">${esc(step === MANUAL_STEPS.length - 1 ? tr("manual.finish") : tr("common.next"))} ${step === MANUAL_STEPS.length - 1 ? "" : "→"}</button>
+          </div>
+        </section>
+      </div>`;
+  }
+
+  function manualMove(delta) {
+    state.manualStep = clamp(state.manualStep + delta, 0, MANUAL_STEPS.length - 1);
+    renderManual();
   }
 
   /* ---------------------------------------------------------- chart */
@@ -1366,7 +1983,8 @@
       const age = state.snap.meta.router_age + (Date.now() - state.loadedAt) / 1000;
       $("#chipLiveText").textContent = `coleta ${ago(age)}`;
       $("#livePill").classList.toggle("stale", age > 1800);
-      $("#cockpitLive").textContent = state.busy ? "coletando" : "ao vivo";
+      if ($("#cockpitLive")) $("#cockpitLive").textContent = state.busy ? "coletando" : "ao vivo";
+      renderPortHud();
     }, 15000);
     setInterval(() => {
       if (state.sunPaused || !state.snap) return;
@@ -1492,7 +2110,23 @@
   }
 
   act("wing", (el) => { closeDrawer(); openWing(el.dataset.key); });
-  act("guide", () => openGuideDrawer());
+  act("guide", () => openManual(0));
+  act("manual", () => openManual(0));
+  act("manual-close", () => closeManual());
+  act("manual-step", (el) => { state.manualStep = Number(el.dataset.step) || 0; renderManual(); });
+  act("manual-next", () => manualMove(1));
+  act("manual-prev", () => manualMove(-1));
+  act("manual-copy", () => copyText(MANUAL_COMMAND, tr("manual.copied")));
+  act("port-select", (el) => portSelect(el.dataset.kind, el.dataset.key));
+  act("port-clear", () => { state.port.selected = null; renderPort(); });
+  act("port-zoom-in", () => portZoom(1.18));
+  act("port-zoom-out", () => portZoom(.85));
+  act("port-reset", () => portResetCamera());
+  act("focus-flow", (el) => {
+    state.focus = el.dataset.key;
+    closeDrawer();
+    openWing("fluxo");
+  });
   act("settings", () => openSettingsDrawer());
   act("settings-close", () => closeDrawer());
   act("budget", () => openBudgetDrawer());
@@ -1525,7 +2159,7 @@
   act("refresh", () => refreshData());
   act("light", () => toggleLight());
   act("palette", () => openPalette());
-  act("tour", () => startTour());
+  act("tour", () => openManual(0));
   act("day", (el) => selectDay(el.dataset.date));
   act("day-reset", () => selectDay(state.snap.today.date));
   act("provider", (el) => toggleProvider(el.dataset.key));
@@ -1597,8 +2231,9 @@
     $("#streak").addEventListener("click", () => openWing("diario"));
     $("#avatarBtn").addEventListener("click", () => openWing("perfil"));
     $("#localeBtn").addEventListener("click", openSettingsDrawer);
-    $("#guideBtn").addEventListener("click", openGuideDrawer);
-    $("#startChip").addEventListener("click", openGuideDrawer);
+    $("#guideBtn").addEventListener("click", () => openManual(0));
+    $("#startChip").addEventListener("click", () => openManual(0));
+    document.querySelectorAll(".port-zoom button").forEach((b) => b.addEventListener("click", () => { const a = b.dataset.act; if (a === "port-zoom-in") portZoom(1.18); else if (a === "port-zoom-out") portZoom(.85); else portResetCamera(); }));
     $("#livePill").addEventListener("click", () => openWing("perfil"));
     $("#chipProviders").addEventListener("click", () => openWing("fluxo"));
     $("#chipXp").addEventListener("click", () => openWing("diario"));
@@ -1646,20 +2281,35 @@
   function bindKeyboard() {
     document.addEventListener("keydown", (ev) => {
       const typing = /^(input|textarea|select)$/i.test(ev.target.tagName) || ev.target.isContentEditable;
+      const manualOpen = !$("#manual").hidden && $("#manual").classList.contains("open");
+      if (manualOpen && ev.key !== "Tab" && ev.key !== "Escape") return;
       if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") {
         ev.preventDefault();
         if ($("#palette").hidden) openPalette(); else closePalette();
         return;
       }
+      if (ev.key === "Tab" && manualOpen) {
+        const sheet = $("#manual .manual-sheet");
+        const items = [...sheet.querySelectorAll("button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")]
+          .filter((el) => el.offsetParent !== null);
+        if (items.length) {
+          const first = items[0];
+          const last = items[items.length - 1];
+          if (!sheet.contains(document.activeElement)) { ev.preventDefault(); first.focus(); }
+          else if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+          else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+        }
+      }
       if (ev.key === "Escape") {
-        if (!$("#tour").hidden) endTour(true);
+        if (!$("#manual").hidden && $("#manual").classList.contains("open")) closeManual();
+        else if (!$("#tour").hidden) endTour(true);
         else if (!$("#palette").hidden) closePalette();
         else if (!$("#drawer").hidden) closeDrawer();
         else if (state.wing) closeWing();
         return;
       }
       if (typing) return;
-      if (ev.key === "?") { ev.preventDefault(); startTour(); return; }
+      if (ev.key === "?") { ev.preventDefault(); openManual(0); return; }
       if (ev.key.toLowerCase() === "r") { ev.preventDefault(); refreshData(); return; }
       if (ev.key.toLowerCase() === "d") { ev.preventDefault(); toggleLight(); return; }
       if (ev.key === "/") { ev.preventDefault(); openPalette(); return; }
@@ -1859,28 +2509,6 @@
         }
       });
     });
-  }
-
-  function openGuideDrawer() {
-    const wings = WING_ORDER.map((k) => `<button class="guide-wing" data-act="wing" data-key="${k}"><b>${esc(tr(`nav.${k}`))}</b><span>${esc(tr(`guide.${k}`))}</span></button>`).join("");
-    const steps = [
-      { n: 1, key: "perfil", title: "onboarding.step1", sub: "onboarding.step1Sub" },
-      { n: 2, key: "fluxo", title: "onboarding.step2", sub: "onboarding.step2Sub" },
-      { n: 3, act: "budget", title: "onboarding.step3", sub: "onboarding.step3Sub" },
-    ].map((x) => `<button class="guide-step" data-act="${x.act || "wing"}"${x.key ? ` data-key="${x.key}"` : ""}>
-        <i>${x.n}</i><b>${esc(tr(x.title))}</b><span>${esc(tr(x.sub))}</span>
-      </button>`).join("");
-    openDrawer(`
-      <span class="drw-eyebrow">${esc(tr("guide.eyebrow"))}</span>
-      <div class="drw-head">
-        <span class="drw-mark" style="--pc:#2f9e6b">?</span>
-        <div><h2>${esc(tr("guide.title"))}</h2><p>${esc(tr("guide.intro"))}</p></div>
-      </div>
-      <div class="drw-section"><h3>${esc(tr("guide.start"))}</h3><div class="guide-steps">${steps}</div></div>
-      <div class="drw-section"><h3>${esc(tr("guide.wings"))}</h3><div class="guide-wings">${wings}</div></div>
-      <div class="drw-note">${esc(tr("guide.tip"))}</div>
-      <div class="drw-actions"><button class="btn primary" data-act="settings">${esc(tr("settings.title"))}</button><button class="btn ghost" data-act="settings-close">${esc(tr("common.close"))}</button></div>
-    `);
   }
 
   function recommendedActions() {
@@ -2423,7 +3051,7 @@
     entries.push({ kind: "ação", title: tr("settings.title"), sub: tr("settings.currencySub"), icon: "", run: openSettingsDrawer });
     entries.push({ kind: "ação", title: "Atualizar dados agora", sub: "roda o coletor local", icon: "", run: refreshData });
     entries.push({ kind: "ação", title: "Alternar dia / crepúsculo", sub: "muda a iluminação", icon: "", run: toggleLight });
-    entries.push({ kind: "ação", title: "Fazer o tour guiado", sub: "6 paradas", icon: "", run: startTour });
+    entries.push({ kind: "ação", title: tr("manual.title"), sub: "5 passos", icon: "", run: () => openManual(0) });
     entries.push({ kind: "ação", title: "Copiar diagnóstico completo", sub: "prompt pronto para sua IA", icon: "", run: () => copyText(buildDiagnosticPrompt(), "Diagnóstico copiado") });
     entries.push({ kind: "ação", title: "Exportar snapshot JSON", sub: "somente dados derivados", icon: "", run: exportJson });
     entries.push({ kind: "ação", title: tr("fluxo.exportCsv"), sub: tr("health.title"), icon: "", run: exportCsv });
