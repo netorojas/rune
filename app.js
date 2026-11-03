@@ -323,6 +323,8 @@
     port: { cx: 600, cy: 540, k: 1, selected: null, movedAt: 0 },
     manualStep: 0,
     manualReturn: null,
+    probes: {},
+    probingAll: false,
   };
 
   const railIcon = (key) => {
@@ -434,6 +436,7 @@
     if (!data || !data.meta) throw new Error("snapshot inválido");
     const first = !state.snap;
     state.snap = data;
+    hydrateProbes(data.fleet?.routes);
     state.loadedAt = Date.now();
     if (!state.selectedDay || !data.series?.some((d) => d.date === state.selectedDay)) {
       state.selectedDay = data.today?.date || data.series?.[data.series.length - 1]?.date || null;
@@ -1612,6 +1615,18 @@
     $("#dockCost").textContent = money(S.today?.cost || 0);
     const free = S.quota?.codex?.available ? S.quota.codex.week_free : state.sunStates[0]?.pct;
     $("#dockFree").textContent = free != null ? pct(free, 0) : "—";
+    const fkeys = fleetKeys();
+    const answered = fkeys.filter((k) => probeFor(k)?.status === "ok").length;
+    const tested = fkeys.filter((k) => probeFor(k) && probeFor(k).status !== "running").length;
+    const routesEl = $("#dockRoutes");
+    if (routesEl) {
+      routesEl.textContent = tested ? `${answered}/${fkeys.length}` : "—";
+      const wrap = $("#dockRoutesWrap");
+      if (wrap) {
+        wrap.classList.toggle("ok", tested > 0 && answered === fkeys.length);
+        wrap.classList.toggle("warn", tested > 0 && answered < fkeys.length);
+      }
+    }
     const set = (sel, text) => { const el = $(sel); if (el) el.textContent = text; };
     set("#portManualLabel", tr("port.manual"));
     set("#portHintText", tr("port.hint"));
@@ -1623,6 +1638,8 @@
     set("#dockCostSub", tr("port.dockToday"));
     set("#dockFreeLabel", tr("port.dockFree"));
     set("#dockFreeSub", tr("port.dockWeek"));
+    set("#dockRoutesLabel", tr("port.dockRoutes"));
+    set("#dockRoutesSub", tr("port.dockRoutesSub"));
     set("#dockActionLabel", tr("port.dockFlow"));
   }
 
@@ -1640,6 +1657,31 @@
     const sel = state.port.selected;
     if (!sel) { el.innerHTML = portInspectorToday(); return; }
     el.innerHTML = sel.kind === "source" ? portInspectorSource() : sel.kind === "ai" ? portInspectorAi(sel.key) : portInspectorTool(sel.key);
+  }
+
+  function quayBlock() {
+    const fkeys = fleetKeys();
+    if (!fkeys.length) return "";
+    const results = fkeys.filter((k) => probeFor(k) && probeFor(k).status !== "running");
+    const ok = results.filter((k) => probeFor(k).status === "ok");
+    const fail = results.filter((k) => probeFor(k).status === "fail");
+    const untested = fkeys.length - results.length;
+    const rows = [...fail, ...ok].slice(0, 4);
+    const busy = state.probingAll;
+    return `<div class="ins-block ins-quay">
+      <span class="ins-label">${esc(tr("port.quay"))}</span>
+      <div class="quay-head">
+        <b>${esc(tr("port.quayCount", { ok: ok.length, total: fkeys.length }))}</b>
+        <button class="quay-test" data-act="probe-all"${busy ? " disabled" : ""}>${esc(busy ? tr("port.quayTesting") : tr("port.quayTest"))}</button>
+      </div>
+      ${rows.map((k) => {
+        const p = probeFor(k);
+        const msg = p.status === "ok" ? (p.model || "") : friendlyError(p.error);
+        return `<button class="quay-row ${p.status === "ok" ? "ok" : "bad"}" data-act="provider-detail" data-key="${esc(k)}" title="${esc(msg)}"><i></i><b>${esc(provMeta(k).name)}</b><em>${esc(msg || "—")}</em><span>→</span></button>`;
+      }).join("")}
+      ${untested ? `<div class="quay-note">${esc(tr("port.quayIdle", { n: untested }))}</div>` : ""}
+      ${!untested && fail.length ? `<div class="quay-note">${esc(tr("port.quayAttention", { n: fail.length }))}</div>` : ""}
+    </div>`;
   }
 
   function portInspectorToday() {
@@ -1686,6 +1728,7 @@
         <div><span>${esc(tr("common.model"))}</span><b class="is-model">${esc(modelName(S.insights?.topModel?.model) || "—")}</b></div>
       </div>
       ${rhythm}
+      ${quayBlock()}
       <div class="ins-block">
         <span class="ins-label">${esc(tr("port.nextAction"))}</span>
         ${nextAction}
@@ -2803,6 +2846,9 @@
   act("sim-days", (el) => setProjection(Number(el.dataset.days)));
   act("toggle-drawer", (el) => { const k = el.dataset.key; state.focus = k; renderFleet(); renderChart(); });
   act("help-error", (el) => openErrorDrawer(Number(el.dataset.i)));
+  act("probe", (el) => runProbe(el.dataset.key));
+  act("probe-all", () => runProbeAll());
+  act("fleet-refresh", () => refreshFleet());
 
   function toggleProvider(key) {
     if (state.focus === key) {
@@ -2989,6 +3035,7 @@
   function openDrawer(html) {
     state.settingsOpen = false;
     state.budgetOpen = false;
+    state.drawerKey = "";
     $("#drawerBody").innerHTML = html;
     $("#drawer").hidden = false;
     $("#drawer").setAttribute("aria-hidden", "false");
@@ -3461,6 +3508,26 @@
         <div class="drw-line"><span>${esc(tr("health.metrics"))}</span><button class="btn ghost" style="padding:3px 8px" data-act="open-url" data-url="${esc(`${location.origin}/metrics`)}">/metrics</button></div>
       </div>` : ""}
       ${models.length ? `<div class="drw-section"><h3>Modelos no período</h3>${models.map((m) => `<div class="drw-line"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(modelName(m.model))}</span><b>${compact(m.tokens)} · ${money(m.cost)}</b></div>`).join("")}</div>` : ""}
+      ${(() => {
+        const f = fleetFor(key);
+        const p = probeFor(key);
+        if (!f && !p) return "";
+        const caps = f ? [f.vision && "visão", f.tools && "ferramentas", f.reasoning && "raciocínio", f.free && "gratuito"].filter(Boolean) : [];
+        return `<div class="drw-section"><h3>Sonda de orquestração</h3>
+          <div class="drw-line"><span>rota no 9router</span><b>${f ? `${int(f.models)} modelos` : "sem rota no catálogo"}</b></div>
+          ${f?.context ? `<div class="drw-line"><span>maior contexto</span><b>${compact(f.context)} tokens</b></div>` : ""}
+          ${caps.length ? `<div class="drw-line"><span>capacidades</span><b>${esc(caps.join(" · "))}</b></div>` : ""}
+          <div class="drw-line"><span>último teste</span><b>${probeChip(key)}</b></div>
+          ${p?.model ? `<div class="drw-line"><span>modelo testado</span><b class="drw-mono">${esc(p.model)}</b></div>` : ""}
+          ${p?.status === "fail" && p.error ? `<div class="drw-note bad" style="margin-top:8px">${esc(friendlyError(p.error))}</div>
+            <details class="drw-details"><summary>resposta original do provedor</summary><div class="drw-line small"><b class="drw-mono" style="white-space:pre-wrap">${esc(p.error)}</b></div></details>` : ""}
+          ${(p?.attempts || []).length > 1 ? `<details class="drw-details"><summary>${p.attempts.length} tentativas</summary>${p.attempts.map((a) => `<div class="drw-line small"><span class="drw-mono">${esc(a.model || "")}</span><b>${a.ok ? `ok · ${int(a.ms || 0)} ms` : `${a.code || "erro"} · ${int(a.ms || 0)} ms`}</b></div>`).join("")}</details>` : ""}
+          <div class="drw-actions" style="margin-top:8px">
+            <button class="btn ghost" data-act="probe" data-key="${esc(key)}"${p?.status === "running" ? " disabled" : ""}>${p?.status === "running" ? "testando…" : "Testar rota"}</button>
+            <button class="btn ghost" data-act="fleet-refresh">Atualizar catálogo</button>
+          </div>
+        </div>`;
+      })()}
       ${kb ? `<div class="drw-section"><h3>Documentação oficial</h3><div class="drw-actions" style="margin-top:6px;flex-direction:column">${kb.docs.map(([label, url]) => `<button class="btn ghost" data-act="open-url" data-url="${esc(url)}" style="justify-content:flex-start">${esc(label)} ↗</button>`).join("")}</div></div>` : ""}
       <div class="drw-note">${esc(kb?.verdict || "Provedor conectado ao 9router.")}<br><br>Nenhuma chave ou token é exibido. A leitura é somente local.</div>
       <div class="drw-actions">
@@ -3468,6 +3535,7 @@
         <button class="btn primary" data-act="ask" data-q="${esc(`Qual a melhor forma de usar ${meta.name} e controlar o consumo?`)}">Perguntar ao Oráculo</button>
       </div>
     `);
+    state.drawerKey = key;
   }
 
   function openQuotaDrawer(key) {
@@ -3914,6 +3982,160 @@
     if (c.status === "active") return { text: "ativa", cls: "ok" };
     if (c.errorCode) return { text: `erro ${c.errorCode}`, cls: "bad" };
     return { text: c.status || "off", cls: "warn" };
+  }
+
+  /* ------------------------------------------------------------ frota viva */
+
+  function fleetOwners() {
+    return (state.snap?.fleet?.owners || []).filter((o) => o.connection);
+  }
+
+  function fleetKeys() {
+    const seen = new Set();
+    const out = [];
+    const add = (k) => { if (k && !seen.has(k)) { seen.add(k); out.push(k); } };
+    fleetOwners().forEach((o) => add(o.connection));
+    (state.snap?.connections || []).forEach((c) => add(c.provider));
+    return out;
+  }
+
+  function fleetFor(key) {
+    return fleetOwners().find((o) => o.connection === key) || null;
+  }
+
+  function probeFor(key) {
+    return state.probes[key] || null;
+  }
+
+  // O servidor guarda o último resultado de cada rota; a aba só precisa lembrar dele.
+  function hydrateProbes(routes) {
+    (routes || []).forEach((r) => {
+      if (!r || !r.connection) return;
+      const at = Date.parse(r.checked_at || "") || 0;
+      const local = state.probes[r.connection];
+      if (local && local.status !== "idle" && (local.at || 0) >= at) return;
+      state.probes[r.connection] = { status: r.ok ? "ok" : "fail", at, ...r };
+    });
+  }
+
+  function shortAge(ms) {
+    if (!ms) return "";
+    const mins = Math.max(0, Math.round((Date.now() - ms) / 60000));
+    if (mins < 1) return "agora";
+    if (mins < 60) return `${mins} min`;
+    const hours = Math.round(mins / 60);
+    return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
+  }
+
+  function probeChip(key) {
+    const p = probeFor(key);
+    if (!p) return `<span class="fl-chip idle">não testada</span>`;
+    if (p.status === "running") return `<span class="fl-chip run"><i></i>testando…</span>`;
+    const age = shortAge(p.at);
+    const title = age ? ` title="testada ${esc(age)} atrás"` : "";
+    if (p.status === "ok") return `<span class="fl-chip ok"${title}>responde · ${int(p.ms || 0)} ms</span>`;
+    const code = p.code ? ` ${p.code}` : "";
+    return `<span class="fl-chip bad"${title}>falha${esc(code)}</span>`;
+  }
+
+  function fleetMessage(key) {
+    const p = probeFor(key);
+    if (!p || p.status !== "fail") return "";
+    return friendlyError(p.error) || "sem resposta";
+  }
+
+  const PROBE_HINTS = {
+    400: "requisição recusada",
+    401: "sem credencial válida",
+    402: "sem créditos ou assinatura",
+    403: "acesso negado pela assinatura",
+    404: "rota ou conta inexistente",
+    410: "modelo descontinuado",
+    429: "limite de requisições atingido",
+    500: "erro interno do provedor",
+    502: "upstream sem resposta",
+    503: "provedor indisponível",
+  };
+
+  function friendlyError(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    const low = text.toLowerCase();
+    const code = Number((text.match(/\[(\d{3})\]/) || [])[1] || 0);
+    const detail = (text.match(/"(?:message|detail|error)"\s*:\s*"([^"]{3,140})/) || [])[1] || "";
+    const guess =
+      /(model|modelo)[^.]{0,40}(not found|retired|unavailable|unsupported|end of life)/.test(low) ? "modelo indisponível no provedor"
+      : /(credit|billing|payment|subscribe|plan)/.test(low) ? "sem créditos ou assinatura"
+      : /(rate limit|too many requests|quota exceeded)/.test(low) ? "limite de requisições atingido"
+      : /(unauthor|invalid.{0,12}key|api key)/.test(low) ? "credencial inválida"
+      : /(forbidden|permission|access denied)/.test(low) ? "acesso negado"
+      : PROBE_HINTS[code] || "";
+    if (guess && detail) return `${guess} · ${detail}`;
+    if (guess) return guess;
+    if (detail) return detail;
+    return text.replace(/^\[[^\]]*\]\s*/, "").replace(/^\[?\d{3}\]?:\s*/, "").replace(/[{}"]/g, "").slice(0, 140);
+  }
+
+  function repaintFleet() {
+    if (state.fleetPaint) return;
+    state.fleetPaint = requestAnimationFrame(() => {
+      state.fleetPaint = null;
+      if (state.wing === "biblioteca") renderWing("biblioteca", { preserve: true });
+      if (state.drawerKey && $("#drawer").classList.contains("open")) openProviderDrawer(state.drawerKey);
+      if (!state.wing) { renderPortHud(); renderPortInspector(); }
+    });
+  }
+
+  async function runProbe(connection, opts = {}) {
+    if (!opts.queued && state.probes[connection]?.status === "running") return;
+    state.probes[connection] = { status: "running", at: Date.now() };
+    repaintFleet();
+    try {
+      const res = await fetch("/api/probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connection, force: !opts.queued }),
+      });
+      const data = await res.json();
+      state.probes[connection] = { status: data.ok ? "ok" : "fail", at: Date.now(), ...data };
+    } catch (err) {
+      state.probes[connection] = { status: "fail", at: Date.now(), error: String(err.message || err) };
+    }
+    repaintFleet();
+  }
+
+  async function runProbeAll() {
+    if (state.probingAll) return;
+    const keys = fleetKeys().filter((k) => state.probes[k]?.status !== "running");
+    if (!keys.length) return;
+    state.probingAll = true;
+    keys.forEach((k) => { state.probes[k] = { status: "running", at: Date.now() }; });
+    repaintFleet();
+    let cursor = 0;
+    // Três sondagens simultâneas: o suficiente para ser rápido sem saturar a máquina.
+    const worker = async () => {
+      while (cursor < keys.length) await runProbe(keys[cursor++], { queued: true });
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    state.probingAll = false;
+    repaintFleet();
+    const ok = keys.filter((k) => state.probes[k]?.status === "ok").length;
+    toast(`${ok} de ${keys.length} rotas responderam à sonda`, ok === keys.length ? "ok" : "warn");
+  }
+
+  async function refreshFleet() {
+    toast("Atualizando catálogo do 9router…", "info");
+    try {
+      await fetch("/api/fleet", { cache: "no-store" });
+      const res = await fetch("/api/snapshot", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      applySnapshot(await res.json());
+      const f = state.snap?.fleet || {};
+      if (f.online) toast(`${int(f.total)} modelos em ${(f.owners || []).length} rotas · ${latency(f.latency_ms)}`);
+      else toast(f.error || "9router não respondeu", "bad");
+    } catch (err) {
+      toast(`Catálogo indisponível · ${err.message}`, "bad");
+    }
   }
 
   function donutSvg(rows) {
@@ -4395,6 +4617,23 @@
     const pickUsage = usageFor(task.pick);
     const freeShare = S.totals.tokens ? ((S.insights?.freeTokensEstimate || 0) / S.totals.tokens) * 100 : 0;
     const statusCount = connected.filter((k) => providerStatus(k).cls === "ok").length;
+    const fleet = S.fleet || {};
+    const owners = fleetOwners();
+    const fkeys = fleetKeys();
+    const probed = fkeys.filter((k) => probeFor(k));
+    const fleetOk = probed.filter((k) => probeFor(k).status === "ok").length;
+    const fleetFail = probed.filter((k) => probeFor(k).status === "fail").length;
+    const fleetIdle = fkeys.length - probed.length;
+    // Quem está quebrado aparece primeiro: o painel existe para mostrar onde agir.
+    const fleetRank = (k) => {
+      const p = probeFor(k);
+      if (p) return p.status === "fail" ? 0 : p.status === "ok" ? 2 : 1;
+      return connFor(k)?.status === "active" ? 1 : 0;
+    };
+    const fleetOrder = [...fkeys].sort((a, b) => fleetRank(a) - fleetRank(b) || (fleetFor(b)?.models || 0) - (fleetFor(a)?.models || 0));
+    const fleetNote = fleet.online
+      ? `9router respondeu em ${latency(fleet.latency_ms)} · ${int(fleet.total)} modelos em ${owners.length} rotas`
+      : "9router offline — o histórico local continua disponível";
     return `
       <div class="manual-hero">
         <div class="manual-copy">
@@ -4405,11 +4644,51 @@
           <span class="mn-label">sua frota agora</span>
           <div class="mn-big">${connected.length}<small> IAs plugadas</small></div>
           <div class="mn-row"><span>conexões saudáveis</span><b>${statusCount} de ${connected.length}</b></div>
+          <div class="mn-row"><span>rotas no 9router</span><b>${fkeys.length}${fleet.online ? ` · ${int(fleet.total)} modelos` : " · offline"}</b></div>
           <div class="mn-row"><span>volume gratuito</span><b>${pct(freeShare, 0)}</b></div>
           <div class="mn-row"><span>provedores medindo</span><b>${(S.providers || []).length}</b></div>
           <div class="mn-row"><span>manual atualizado</span><b>3 nov 2026</b></div>
         </div>
       </div>
+      <section class="w-card fleet-live">
+        <div class="w-card-head">
+          <div><h3>Frota ao vivo</h3><p>${esc(fleetNote)}</p></div>
+          <div class="fl-tools">
+            <span class="fl-signal ${fleet.online ? "on" : "off"}"><i></i>${fleet.online ? "online" : "offline"}</span>
+            <button class="btn ghost" data-act="fleet-refresh">Atualizar catálogo</button>
+            <button class="btn primary" data-act="probe-all"${state.probingAll ? " disabled" : ""}>${state.probingAll ? "testando…" : "Testar todas"}</button>
+          </div>
+        </div>
+        <div class="fl-summary">
+          <div><b>${int(fleet.total || 0)}</b><span>modelos catalogados</span></div>
+          <div><b>${owners.length}</b><span>rotas no 9router</span></div>
+          <div class="ok"><b>${fleetOk}</b><span>respondendo</span></div>
+          <div class="${fleetFail ? "bad" : ""}"><b>${fleetFail}</b><span>com falha</span></div>
+          <div><b>${fleetIdle}</b><span>sem teste</span></div>
+        </div>
+        <div class="fl-list">
+          ${fleetOrder.map((k) => {
+            const meta = provMeta(k);
+            const f = fleetFor(k);
+            const p = probeFor(k);
+            const conn = connFor(k);
+            const caps = f ? [f.vision && "visão", f.tools && "ferramentas", f.reasoning && "raciocínio", f.free && "gratuito"].filter(Boolean) : [];
+            const msg = p?.status === "ok"
+              ? (p.model || "")
+              : (fleetMessage(k) || friendlyError(conn?.error) || "");
+            const cls = p ? (p.status === "ok" ? "ok" : p.status === "fail" ? "bad" : "run") : (conn?.status === "active" ? "idle" : "bad");
+            return `<div class="fl-row ${cls}" style="--pc:${meta.color}">
+              <span class="fl-ai"><i class="fl-dot"></i><b>${esc(meta.name)}</b><em>${esc(f?.key || "sem rota")}${f ? ` · ${int(f.models)} modelos` : ""}</em></span>
+              <span class="fl-caps">${caps.length ? caps.map((c) => `<span>${esc(c)}</span>`).join("") : `<span class="dim">—</span>`}</span>
+              <span class="fl-ctx">${f?.context ? `${compact(f.context)} ctx` : "—"}</span>
+              <span class="fl-probe">${probeChip(k)}</span>
+              <span class="fl-msg" title="${esc(msg)}">${esc(msg || (p?.model ? p.model : "aguardando teste"))}</span>
+              <span class="fl-act"><button class="mini" data-act="probe" data-key="${esc(k)}"${p?.status === "running" ? " disabled" : ""}>testar</button><button class="mini ghost" data-act="provider-detail" data-key="${esc(k)}">manual</button></span>
+            </div>`;
+          }).join("")}
+        </div>
+        <div class="drw-note">A sonda envia <b>1 token</b> por rota pelo seu próprio 9router e registra o modelo que respondeu. Falhas mostram o motivo devolvido pelo provedor — é assim que “conectado” deixa de ser uma suposição.</div>
+      </section>
       <div class="decision">
         <div class="w-card">
           <div class="w-card-head"><div><h3>Decisor de tarefa</h3><p>escolha o tipo de trabalho e veja a rota recomendada</p></div><span class="pill info">${keys.length} manuais</span></div>

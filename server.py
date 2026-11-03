@@ -16,9 +16,12 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from urllib.parse import urlparse
 
 BASE = Path(__file__).resolve().parent
@@ -30,9 +33,12 @@ COLLECT_LOCAL = BASE / "collector" / "collect.py"
 if not COLLECT.exists() and COLLECT_LOCAL.exists():
     COLLECT = COLLECT_LOCAL
 ROUTER_DB = Path.home() / ".9router" / "db" / "data.sqlite"
+RUNE_DATA = BASE / ".rune-data"
+FLEET_FILE = RUNE_DATA / "fleet.json"
 QODER_DB = Path.home() / "Library" / "Application Support" / "com.qoder.app.stable" / "main.sqlite"
 HOST = os.environ.get("RUNE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RUNE_PORT", "8770"))
+ROUTER_URL = os.environ.get("RUNE_ROUTER_URL", "http://127.0.0.1:20128").rstrip("/")
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_-]{6,}|Bearer\s+[A-Za-z0-9._-]{8,}|ya29\.[A-Za-z0-9._-]+|sk-ant-[A-Za-z0-9._-]+)")
@@ -586,6 +592,335 @@ def normalize_quota(data: dict) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- frota viva
+# Catálogo lido do 9router local em /v1/models. Nenhum prompt ou chave sai
+# daqui: o painel só recebe nomes de modelos, contagens e capacidades.
+
+OWNER_META = {
+    "combo": ("Combos", None),
+    "cc": ("Claude Code", "claude"),
+    "ag": ("Antigravity", "antigravity"),
+    "cx": ("Codex", "codex"),
+    "gc": ("Gemini CLI", "gemini-cli"),
+    "gemini": ("Gemini API", "gemini"),
+    "openrouter": ("OpenRouter", "openrouter"),
+    "nvidia": ("NVIDIA NIM", "nvidia"),
+    "cf": ("Cloudflare Workers AI", "cloudflare-ai"),
+    "ollama": ("Ollama local", "ollama"),
+    "oc": ("OpenCode Zen", "opencode"),
+    "mmf": ("Mimo", "mimo"),
+}
+FREE_OWNERS = {"ollama", "cf", "oc", "nvidia"}
+
+_catalog_cache: dict = {"at": 0.0, "data": None}
+_catalog_raw: dict = {"by_owner": {}}
+_probe_cache: dict[str, dict] = {}
+_route_cache: dict[str, str] = {}
+_conn_cache: dict[str, dict] = {}
+_dead_models: dict[str, float] = {}
+_fleet_lock = threading.Lock()
+_fleet_save_lock = threading.Lock()
+# Semáforo: no máximo 3 sondagens simultâneas para não saturar a máquina.
+_probe_lock = threading.BoundedSemaphore(3)
+
+
+def _load_fleet_state() -> dict[str, dict]:
+    """Último resultado conhecido de cada rota, para sobreviver ao reload da aba."""
+    raw = _read_json(FLEET_FILE)
+    rows = raw.get("routes") if isinstance(raw.get("routes"), dict) else {}
+    out: dict[str, dict] = {}
+    for key, row in rows.items():
+        if not isinstance(row, dict):
+            continue
+        out[str(key)] = {
+            "ok": bool(row.get("ok")),
+            "model": _clean(row.get("model"), 160),
+            "ms": row.get("ms") if isinstance(row.get("ms"), int) else None,
+            "code": row.get("code") if isinstance(row.get("code"), int) else None,
+            "error": _clean(row.get("error"), 160),
+            "checked_at": row.get("checked_at"),
+            "last_ok": row.get("last_ok"),
+            "last_ok_ms": row.get("last_ok_ms"),
+            "last_ok_model": _clean(row.get("last_ok_model"), 160),
+        }
+    return out
+
+
+_fleet_state: dict[str, dict] = _load_fleet_state()
+
+
+def _save_fleet_state() -> None:
+    with _fleet_save_lock:
+        with _fleet_lock:
+            payload = {
+                "version": 1,
+                "updated_at": datetime.now().astimezone().isoformat(),
+                "routes": _fleet_state,
+            }
+        tmp = FLEET_FILE.with_suffix(".tmp")
+        try:
+            RUNE_DATA.mkdir(parents=True, exist_ok=True)
+            os.chmod(RUNE_DATA, 0o700)
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, FLEET_FILE)
+        except OSError:
+            pass
+
+
+def fleet_routes() -> list[dict]:
+    with _fleet_lock:
+        rows = [{"connection": key, **row} for key, row in _fleet_state.items()]
+    return sorted(rows, key=lambda r: (not r.get("ok"), r["connection"]))
+
+
+def _record_probe(result: dict) -> None:
+    key = str(result.get("connection") or "")
+    if not key:
+        return
+    now_iso = datetime.now().astimezone().isoformat()
+    with _fleet_lock:
+        prev = _fleet_state.get(key) or {}
+        row = {
+            "ok": bool(result.get("ok")),
+            "model": _clean(result.get("model"), 160),
+            "ms": result.get("ms") if isinstance(result.get("ms"), int) else None,
+            "code": result.get("code") if isinstance(result.get("code"), int) else None,
+            "error": _clean(result.get("error"), 160),
+            "checked_at": now_iso,
+            "last_ok": prev.get("last_ok"),
+            "last_ok_ms": prev.get("last_ok_ms"),
+            "last_ok_model": prev.get("last_ok_model"),
+        }
+        if row["ok"]:
+            row["last_ok"] = now_iso
+            row["last_ok_ms"] = row["ms"]
+            row["last_ok_model"] = row["model"]
+        _fleet_state[key] = row
+    _save_fleet_state()
+
+
+def router_catalog(force: bool = False) -> dict:
+    """Lista o que o 9router tem plugado agora. Cache curto para não pesar o snapshot."""
+    now = time.time()
+    if not force:
+        with _fleet_lock:
+            cached = _catalog_cache["data"]
+            ttl = _catalog_cache.get("ttl", 20)
+            if cached and now - _catalog_cache["at"] < ttl:
+                return cached
+    started = time.time()
+    out = {
+        "online": False, "latency_ms": None, "total": 0, "owners": [], "combos": [],
+        "checked_at": datetime.now().astimezone().isoformat(), "error": "",
+    }
+    try:
+        req = urlrequest.Request(f"{ROUTER_URL}/v1/models", headers={"Accept": "application/json"})
+        with urlrequest.urlopen(req, timeout=2.0) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+        items = payload.get("data") or []
+        owners: dict[str, dict] = {}
+        by_owner: dict[str, list[str]] = {}
+        for m in items:
+            mid = str(m.get("id") or "")
+            if not mid:
+                continue
+            oid = str(m.get("owned_by") or "?")
+            caps = m.get("capabilities") or {}
+            by_owner.setdefault(oid, []).append(mid)
+            row = owners.setdefault(oid, {
+                "key": oid, "label": OWNER_META.get(oid, (oid, None))[0],
+                "connection": OWNER_META.get(oid, (oid, None))[1],
+                "models": 0, "context": 0, "vision": False, "tools": False,
+                "reasoning": False, "free": oid in FREE_OWNERS, "sample": [],
+            })
+            row["models"] += 1
+            ctx = int(caps.get("contextWindow") or m.get("context_length") or 0)
+            row["context"] = max(row["context"], ctx)
+            row["vision"] = row["vision"] or bool(caps.get("vision"))
+            row["tools"] = row["tools"] or bool(caps.get("tools"))
+            row["reasoning"] = row["reasoning"] or bool(caps.get("reasoning"))
+            row["free"] = row["free"] or "free" in mid.lower()
+            if len(row["sample"]) < 2:
+                row["sample"].append(mid)
+        out.update({
+            "online": True,
+            "latency_ms": round((time.time() - started) * 1000, 1),
+            "total": len(items),
+            "owners": sorted(owners.values(), key=lambda r: (-r["models"], r["label"])),
+            "combos": [{"name": name} for name in by_owner.get("combo", [])][:6],
+        })
+        with _fleet_lock:
+            _catalog_raw["by_owner"] = by_owner
+    except (urlerror.URLError, TimeoutError, OSError, ValueError) as exc:
+        out["error"] = _clean(f"{type(exc).__name__}: {exc}", 140)
+    with _fleet_lock:
+        # Falha não pode envenenar a frota por 20s: tenta de novo em 3s.
+        _catalog_cache.update({"at": now, "data": out, "ttl": 20 if out.get("online") else 3})
+    return out
+
+
+def _model_score(model: str) -> int:
+    low = model.lower()
+    score = 0
+    if "free" in low:
+        score += 8
+    if "flash" in low:
+        score += 4
+    if re.search(r"mini|lite", low):
+        score += 3
+    if "haiku" in low:
+        score += 2
+    if "instruct" in low:
+        score += 1
+    return -score
+
+
+# O catálogo do 9router carrega modelos já desligados (HTTP 410). Guardamos por
+# quanto tempo cada modelo deve ser evitado para a próxima sondagem ser rápida.
+DEAD_TTL = {410: 3600, 404: 900, 401: 900, 403: 600, 429: 180}
+
+
+def _probe_candidates(owner: str, limit: int = 4) -> list[str]:
+    if not _catalog_raw.get("by_owner"):
+        router_catalog()
+    ids = list((_catalog_raw.get("by_owner") or {}).get(owner, []))
+    if not ids:
+        return []
+    now = time.time()
+    alive = [m for m in ids if _dead_models.get(m, 0) < now]
+    return sorted(alive or ids, key=_model_score)[:limit]
+
+
+def _mark_dead(model: str, code) -> None:
+    ttl = DEAD_TTL.get(code, 60)
+    with _fleet_lock:
+        _dead_models[model] = time.time() + ttl
+
+
+def probe_connection(connection: str, force: bool = False) -> dict:
+    """Testa uma rota tentando até 4 modelos: o catálogo lista modelos mortos."""
+    owner = next((o for o, (_, c) in OWNER_META.items() if c == connection), "")
+    if not owner:
+        return {"ok": False, "connection": connection, "error": "rota desconhecida", "attempts": []}
+    cached_conn = _conn_cache.get(connection)
+    if not force and cached_conn and time.time() - cached_conn["_at"] < 60:
+        return {k: v for k, v in cached_conn.items() if k != "_at"}
+    cat = router_catalog()
+    if not cat.get("online"):
+        return {"ok": False, "connection": connection, "error": "9router não respondeu", "attempts": []}
+    candidates = _probe_candidates(owner)
+    cached = _route_cache.get(connection)
+    if cached and cached not in candidates:
+        candidates.insert(0, cached)
+    if not candidates:
+        return {"ok": False, "connection": connection, "error": "nenhum modelo nesta rota", "attempts": []}
+    attempts: list[dict] = []
+    deadline = time.time() + 45
+    # O primeiro candidato é o mais provável; os seguintes valem menos espera.
+    for i, model in enumerate(candidates[:4]):
+        if time.time() > deadline:
+            break
+        res = probe_route(model, timeout=20 if i == 0 else 12)
+        attempts.append({k: res.get(k) for k in ("model", "ok", "ms", "code", "error") if res.get(k) is not None})
+        if res.get("ok"):
+            _route_cache[connection] = model
+            result = {
+                "ok": True, "connection": connection, "owner": owner, "model": model,
+                "ms": res.get("ms"), "tokens": res.get("tokens"),
+                "models": cat.get("total"), "attempts": attempts,
+            }
+            _conn_cache[connection] = {**result, "_at": time.time()}
+            _record_probe(result)
+            return result
+        _mark_dead(model, res.get("code"))
+    result = {
+        "ok": False, "connection": connection, "owner": owner,
+        "error": (attempts[-1].get("error") if attempts else "sem resposta"),
+        "attempts": attempts,
+    }
+    _conn_cache[connection] = {**result, "_at": time.time()}
+    _record_probe(result)
+    return result
+
+
+def probe_all() -> list[dict]:
+    """Sonda todas as rotas com no máximo 3 em paralelo, para poupar a máquina."""
+    connections = [c for _, c in OWNER_META.values() if c]
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        return list(pool.map(probe_connection, connections))
+
+
+def _router_key() -> str:
+    """Chave ativa só em memória, somente-leitura, para falar com o 9router local."""
+    conn = _ro(ROUTER_DB)
+    if conn is None:
+        return ""
+    try:
+        row = conn.execute("SELECT key FROM apiKeys WHERE isActive=1 ORDER BY createdAt LIMIT 1").fetchone()
+        return (row["key"] or "").strip() if row else ""
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+
+
+def probe_route(model: str, timeout: float = 20.0) -> dict:
+    """Mandada mínima (1 token) por uma rota do 9router para provar que ela responde."""
+    model = (model or "").strip()
+    if not model or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:\[\]-]{0,140}", model):
+        return {"ok": False, "model": model, "error": "modelo inválido"}
+    cached = _probe_cache.get(model)
+    if cached and time.time() - cached["_at"] < 45:
+        return {k: v for k, v in cached.items() if k != "_at"}
+    cat = router_catalog()
+    if not cat.get("online"):
+        return {"ok": False, "model": model, "error": "9router não respondeu"}
+    key = _router_key()
+    if not key:
+        return {"ok": False, "model": model, "error": "sem chave ativa no 9router"}
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1, "stream": False, "temperature": 0,
+    }).encode("utf-8")
+    req = urlrequest.Request(
+        f"{ROUTER_URL}/v1/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
+    started = time.time()
+    with _probe_lock:
+        try:
+            with urlrequest.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8") or "{}")
+            usage = data.get("usage") or {}
+            result = {
+                "ok": True, "model": model, "owner": str(data.get("model") or model).split("/")[0],
+                "ms": round((time.time() - started) * 1000),
+                "tokens": int(usage.get("total_tokens") or 0),
+            }
+        except urlerror.HTTPError as exc:
+            detail = ""
+            try:
+                detail = _error_message(json.loads(exc.read().decode("utf-8") or "{}"))
+            except (ValueError, OSError):
+                detail = ""
+            result = {
+                "ok": False, "model": model, "code": exc.code,
+                "ms": round((time.time() - started) * 1000),
+                "error": _clean(detail or str(exc.reason), 160),
+            }
+        except (urlerror.URLError, TimeoutError, OSError, ValueError) as exc:
+            result = {
+                "ok": False, "model": model,
+                "ms": round((time.time() - started) * 1000),
+                "error": _clean(f"{type(exc).__name__}: {exc}", 160),
+            }
+        _probe_cache[model] = {**result, "_at": time.time()}
+    return result
+
+
 def build_snapshot() -> dict:
     data = _read_json(DATA_FILE)
     router = load_router_usage()
@@ -628,6 +963,21 @@ def build_snapshot() -> dict:
             "expiresAt": c.get("expiresAt"),
             "health": provider_health.get(c.get("provider")),
         })
+
+    # O catálogo vivo diz quantas rotas cada conexão realmente tem agora.
+    fleet = {**router_catalog(), "routes": fleet_routes()}
+    owner_rows = {row["key"]: row for row in fleet.get("owners") or []}
+    for conn in connections:
+        owner = next((o for o, (_, linked) in OWNER_META.items() if linked == conn["provider"]), "")
+        row = owner_rows.get(owner)
+        conn["owner"] = owner
+        conn["models"] = row["models"] if row else 0
+        conn["context"] = row["context"] if row else 0
+        conn["capabilities"] = (
+            {"vision": row["vision"], "tools": row["tools"], "reasoning": row["reasoning"]}
+            if row else {"vision": False, "tools": False, "reasoning": False}
+        )
+        conn["free"] = bool(row and row["free"])
 
     keys = [{"name": k.get("name"), "keyId": k.get("keyId"), "active": bool(k.get("active")), "restricted": bool(k.get("restricted"))}
             for k in data.get("keys") or []]
@@ -742,6 +1092,7 @@ def build_snapshot() -> dict:
         "errors": errors,
         "alerts": alerts,
         "connections": connections,
+        "fleet": fleet,
         "keys": keys,
         "quota": quota,
         "sunStates": sun_states,
@@ -1021,6 +1372,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": "falha ao montar snapshot", "detail": _clean(str(exc), 200)})
         elif path == "/api/health":
             self._json(200, {"ok": True, "pid": os.getpid(), "port": PORT})
+        elif path == "/api/fleet":
+            try:
+                fleet = {**router_catalog(force=True), "routes": fleet_routes()}
+                self._json(200, fleet)
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"online": False, "error": "falha ao listar a frota", "detail": _clean(str(exc), 160)})
         elif path == "/api/security":
             try:
                 self._json(200, security_audit())
@@ -1036,8 +1393,23 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(404, {"error": "rota inexistente"})
 
+    def _same_origin(self) -> bool:
+        """Bloqueia POST disparado por outra página aberta no navegador (CSRF em loopback)."""
+        origin = (self.headers.get("Origin") or "").strip()
+        if not origin:
+            return True  # curl e scripts locais não enviam Origin
+        try:
+            origin_host = (urlparse(origin).hostname or "").lower()
+        except ValueError:
+            return False
+        req_host = (self.headers.get("Host") or "").split(":")[0].lower()
+        return bool(origin_host) and origin_host == req_host
+
     def do_POST(self):
         path = urlparse(self.path).path
+        if not self._same_origin():
+            self._json(403, {"ok": False, "error": "origem não permitida"})
+            return
         if path == "/api/refresh":
             if not _refresh_lock.acquire(blocking=False):
                 self._json(409, {"ok": False, "error": "coleta já em andamento"})
@@ -1061,6 +1433,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "seconds": round(time.time() - started, 1), "snapshot": build_snapshot()})
             finally:
                 _refresh_lock.release()
+        elif path == "/api/probe":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length > 4096:
+                self._json(413, {"ok": False, "error": "payload grande demais"})
+                return
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                self._json(400, {"ok": False, "error": "json inválido"})
+                return
+            model = str(payload.get("model") or "").strip()
+            connection = str(payload.get("connection") or "").strip()
+            try:
+                if model:
+                    self._json(200, probe_route(model))
+                elif connection:
+                    self._json(200, probe_connection(connection, force=bool(payload.get("force"))))
+                elif payload.get("all"):
+                    self._json(200, {"results": probe_all()})
+                else:
+                    self._json(400, {"ok": False, "error": "informe model, connection ou all"})
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"ok": False, "model": model, "connection": connection,
+                                 "error": _clean(f"{type(exc).__name__}: {exc}", 160)})
         else:
             self._json(404, {"error": "rota inexistente"})
 

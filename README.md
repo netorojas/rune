@@ -41,6 +41,8 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 
 ### Monitoramento de verdade
 
+- **Frota viva** lida do 9router em `/v1/models`: cada IA plugada, quantos modelos ela tem, contexto máximo e capacidades (visão, ferramentas, raciocínio, gratuito).
+- **Sonda de orquestração** ("Testar rotas"): prova com uma chamada de 1 token se a rota responde de verdade, sem depender do que o catálogo promete. O resultado fica em `.rune-data/fleet.json` (`0600`) e sobrevive ao reload; o número "X de 11 rotas respondem" aparece no dock do Atlas.
 - **Orçamentos** em BRL, USD ou EUR, com limite global, limite por provedor e marcador de alerta (60–90%).
 - **Motor de alertas** para orçamento estourado, cota baixa, cache abaixo da meta, erros e coleta parada.
 - **SLO por provedor** na janela de 7 dias: p50, p95, tempo até o primeiro token e taxa de erro.
@@ -89,11 +91,15 @@ AI_USAGE_HOME="$HOME/.ai-usage" python3 server.py
 
 | Rota | Método | Conteúdo |
 |---|---|---|
-| `/api/snapshot` | GET | Snapshot completo usado pelo painel. |
+| `/api/snapshot` | GET | Snapshot completo usado pelo painel, incluindo `fleet.routes` com o último resultado de cada rota. |
+| `/api/fleet` | GET | Catálogo vivo do 9router (`/v1/models`): modelos, donos, contexto e capacidades. |
+| `/api/probe` | POST | Sonda de orquestração. Corpo `{"connection":"codex"}` testa a rota, `{"model":"cx/gpt-6.1-sol"}` testa um modelo e `{"all":true}` testa todas. Cada teste é uma chamada de 1 token. |
 | `/api/security` | GET | Auditoria local, com achados e correções. |
 | `/metrics` | GET | Métricas Prometheus. |
 | `/api/health` | GET | Processo e porta. |
 | `/api/refresh` | POST | Executa o coletor e devolve um snapshot novo. |
+
+`POST` recusa requisições cujo `Origin` não corresponde ao `Host` local — outra aba aberta no navegador não consegue disparar coleta nem gastar token pelo `localhost`.
 
 ## Privacidade
 
@@ -108,6 +114,7 @@ O contrato do Rune é curto e verificável no código:
 - **Não** escrevem no banco do 9router; a leitura é `mode=ro`.
 - **Não** usam refresh token do Claude.
 - Prompts, respostas e trechos de código **não** são persistidos nem enviados.
+- A sonda de orquestração envia somente `ping` com `max_tokens: 1` pelo 9router; nenhum conteúdo seu entra na sondagem. O painel guarda apenas modelo, latência, código HTTP e horário em `.rune-data/fleet.json` (`0600`).
 
 O único tráfego externo possível é o que o próprio 9router já faz para falar com os provedores.
 
@@ -120,6 +127,7 @@ Qoder Desktop (main.sqlite)┘                              │
                                                           ▼
                                         server.py (127.0.0.1:8770)
                                           ├── /api/snapshot
+                                          ├── /api/fleet · /api/probe
                                           ├── /api/security
                                           ├── /metrics
                                           └── index.html + app.js + i18n.js + styles.css
@@ -158,6 +166,7 @@ The Atlas separates the source (9router, the local router — not an AI), the AI
 ### Features
 
 - Ten functional wings: overview, flow, sessions, workshop, local assistant, fleet manual, changelog, community, profile and help.
+- Live fleet read from 9router plus a 1-token orchestration probe per route ("X of 11 routes answering"), persisted locally so it survives a reload.
 - Navigable 3D Atlas plus a five-step interactive manual with live collection checks.
 - Global and per-provider budgets with forecast and threshold alerts.
 - 7-day SLOs: p50, p95, time to first token and error rate.
