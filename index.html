@@ -146,8 +146,55 @@
       </aside>
 
       <main class="dashboard port-dashboard">
-        <section class="port" id="port" aria-label="Porto Rune — mapa da sua operação">
-          <div class="port-viewport" id="portViewport" tabindex="0" aria-label="Mapa interativo. Arraste para explorar; use as setas para mover e mais ou menos para aproximar.">
+        <section class="deck">
+          <header class="deck-head">
+            <div class="deck-copy">
+              <span class="port-kicker" id="portKicker">PORTO RUNE · 03 NOV</span>
+              <h1 id="portHeadline">Tudo no lugar.</h1>
+              <p id="portSub">Lendo os dados locais…</p>
+            </div>
+            <div class="deck-actions">
+              <button class="port-btn ghost" data-act="wing" data-key="fluxo">
+                <span>Ver fluxo</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              </button>
+              <button class="port-btn primary" data-act="manual">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.2a2.6 2.6 0 015 1.1c0 1.7-2.6 1.9-2.6 3.5"/><circle cx="12" cy="17.2" r=".9" fill="currentColor"/></svg>
+                <span id="portManualLabel">Como jogar</span>
+              </button>
+            </div>
+          </header>
+
+          <div class="deck-kpis" aria-label="Resumo de hoje">
+            <div class="dkpi">
+              <span id="dockTokensLabel">hoje</span>
+              <b id="dockTokens">—</b>
+              <em>tokens</em>
+            </div>
+            <div class="dkpi">
+              <span id="dockCostLabel">custo</span>
+              <b id="dockCost">—</b>
+              <em id="dockCostSub">hoje</em>
+            </div>
+            <div class="dkpi">
+              <span id="dockFreeLabel">folga</span>
+              <b id="dockFree">—</b>
+              <em id="dockFreeSub">semana</em>
+            </div>
+            <button class="dkpi dkpi-routes" id="dockRoutesWrap" data-act="wing" data-key="biblioteca">
+              <span id="dockRoutesLabel">rotas</span>
+              <b id="dockRoutes">—</b>
+              <em id="dockRoutesSub">respondem</em>
+            </button>
+            <div class="dkpi dkpi-wide">
+              <span>próximo passo</span>
+              <b class="dkpi-next" id="deckNext">—</b>
+            </div>
+          </div>
+
+          <div class="deck-body">
+            <section class="port" id="port" aria-label="Porto Rune — mapa da sua operação">
+              <div class="port-viewport" id="portViewport" tabindex="0" aria-label="Mapa interativo. Arraste para explorar; use as setas para mover e mais ou menos para aproximar.">
             <svg class="port-world" id="portWorld" viewBox="0 0 1200 1000" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fonte, IAs e ferramentas do seu ambiente">
               <defs>
                 <radialGradient id="portSea" cx="50%" cy="42%" r="72%">
@@ -200,17 +247,14 @@
             </svg>
           </div>
 
-          <header class="port-hud">
-            <div class="port-hud-copy">
-              <span class="port-kicker" id="portKicker">PORTO RUNE · 03 NOV</span>
-              <h1 id="portHeadline">Tudo no lugar.</h1>
-              <p id="portSub">Lendo os dados locais…</p>
-            </div>
-            <button class="port-btn primary" data-act="manual">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.2a2.6 2.6 0 015 1.1c0 1.7-2.6 1.9-2.6 3.5"/><circle cx="12" cy="17.2" r=".9" fill="currentColor"/></svg>
-              <span id="portManualLabel">Como jogar</span>
-            </button>
-          </header>
+          <div class="port-atmos" aria-hidden="true">
+            <span class="pa-stars"></span>
+            <span class="pa-aurora"></span>
+            <span class="pa-moon"></span>
+            <span class="pa-horizon"></span>
+            <span class="pa-sweep"></span>
+            <span class="pa-fog"></span>
+          </div>
 
           <div class="port-zoom" role="group" aria-label="Câmera do mapa">
             <button data-act="port-zoom-in" aria-label="Aproximar" title="Aproximar">+</button>
@@ -223,20 +267,12 @@
             <span id="portHintText">Arraste para explorar · clique numa construção</span>
           </div>
 
-          <div class="port-dock">
-            <div class="dock-metrics">
-              <div class="dock-metric"><span id="dockTokensLabel">hoje</span><b id="dockTokens">—</b><em>tokens</em></div>
-              <div class="dock-metric"><span id="dockCostLabel">custo</span><b id="dockCost">—</b><em id="dockCostSub">hoje</em></div>
-              <div class="dock-metric"><span id="dockFreeLabel">folga</span><b id="dockFree">—</b><em id="dockFreeSub">semana</em></div>
-              <div class="dock-metric dock-routes" id="dockRoutesWrap" data-act="wing" data-key="biblioteca" role="button" tabindex="0" title="Rotas que responderam ao último teste"><span id="dockRoutesLabel">rotas</span><b id="dockRoutes">—</b><em id="dockRoutesSub">respondem</em></div>
-            </div>
-            <button class="dock-action" data-act="wing" data-key="fluxo"><span id="dockActionLabel">Ver fluxo</span> <span>→</span></button>
+              <div class="port-list" id="portList" aria-label="Versão em lista do mapa"></div>
+            </section>
+
+            <aside class="inspector" id="inspector" aria-live="polite"></aside>
           </div>
-
-          <div class="port-list" id="portList" aria-label="Versão em lista do mapa"></div>
         </section>
-
-        <aside class="inspector" id="inspector" aria-live="polite"></aside>
 
         <div class="atlas-legacy" hidden>
         <section class="hero" id="hero">

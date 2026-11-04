@@ -30,7 +30,7 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 
 | Área | O que você vê e faz |
 |---|---|
-| **Atlas** | Porto 3D navegável: a fonte (9router), as IAs e as ferramentas instaladas, cada uma com seu papel. Clique numa construção para ver o que ela faz, sua fatia de uso e a próxima ação. |
+| **Atlas** | Painel de comando: faixa de KPIs do dia, porto 3D navegável e inspetor com limites reais por IA (Codex, Claude, Google) e projetos ativos. Clique numa construção para ver o papel, a fatia de uso e a próxima ação. |
 | **Fluxo** | Consumo por dia/hora, projeção do mês, orçamento global e por provedor. |
 | **Sessões** | Chamadas recentes, projetos, latência, status e diagnóstico por provedor. |
 | **Oficina** | Inventário de CLIs/apps, skills, artefatos e sinais de desperdício. |
@@ -44,7 +44,7 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 ### Monitoramento de verdade
 
 - **Frota viva** lida do 9router em `/v1/models`: cada IA plugada, quantos modelos ela tem, contexto máximo e capacidades (visão, ferramentas, raciocínio, gratuito).
-- **Sonda de orquestração** ("Testar rotas"): prova com uma chamada de 1 token se a rota responde de verdade, sem depender do que o catálogo promete. O resultado fica em `.rune-data/fleet.json` (`0600`) e sobrevive ao reload; o número "X de 11 rotas respondem" aparece no dock do Atlas.
+- **Sonda de orquestração** ("Testar rotas"): prova com uma chamada de 1 token se a rota responde de verdade, sem depender do que o catálogo promete. O resultado fica em `.rune-data/fleet.json` (`0600`) e sobrevive ao reload; o número "X de 11 rotas respondem" aparece na faixa de KPIs do Atlas.
 - **Orçamentos** em BRL, USD ou EUR, com limite global, limite por provedor e marcador de alerta (50–90%). O custo-base é USD, como o 9router grava; a conversão acontece só na exibição e no formulário. O orçamento é salvo no servidor em `.rune-data/settings.json` (`0600`), então vale para qualquer navegador e para os alertas fora da aba.
 - **Gasto do mês** calculado no servidor a partir do `usageHistory` do 9router (não dos últimos 14 dias): custo do mês, projeção por dia corrido, cache hit e quebra por provedor.
 - **Histórico de 12 meses** no Fluxo: custo, tokens, chamadas e cache hit por mês, direto do histórico do 9router, com o mês corrente destacado e meses sem uso zerados para a comparação ficar honesta. Clicar em um mês baixa o fechamento CSV daquele mês.
@@ -198,7 +198,7 @@ Leia [CONTRIBUTING.md](CONTRIBUTING.md). Issues e Discussions são o canal da co
 
 AI costs are split across providers, models, subscriptions and keys. Rune turns local metadata from 9router, Qoder Desktop and the `~/.ai-usage` collector into an explorable 3D port with ten functional wings.
 
-The Atlas separates the source (9router, the local router — not an AI), the AIs that answer and the tools where you work. Click any building to see its role, usage share and next action. A five-step "How to play" manual shows how to wire your AI tools into the panel with a live checklist.
+The Atlas works as a command deck: a live KPI strip on top, the navigable 3D port in the middle, and an inspector with real per-AI limits (Codex, Claude, Google) and active projects. The source (9router, the local router — not an AI), the AIs that answer and the tools where you work stay separated. Click any building to see its role, usage share and next action. A five-step "How to play" manual shows how to wire your AI tools into the panel with a live checklist.
 
 ### Features
 

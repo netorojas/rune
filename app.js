@@ -386,10 +386,9 @@
   }
 
   function applyUiScale(retry = 0) {
-    // Base de 1280x720. O zoom do CSS é ignorado por vários navegadores de TV,
-    // então a escala é feita com transform no shell — funciona em qualquer motor.
-    // As medidas vão em px prontos: navegadores de TV antigos não sabem dividir
-    // dentro de calc(), e a página ficaria minúscula.
+    // O shell é fluido: ocupa a viewport inteira e o grid estica em qualquer
+    // proporção. Só telas realmente grandes (TV/monitor 4K) recebem escala
+    // uniforme para manter a leitura à distância — nunca acima de 1.6x.
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     // Alguns navegadores de TV devolvem 0 antes do primeiro layout.
@@ -397,8 +396,8 @@
       if (retry < 20) setTimeout(() => applyUiScale(retry + 1), 100);
       return;
     }
-    const fit = Math.min(vw / 1280, vh / 720);
-    const scale = Math.max(1, Math.min(3, fit));
+    const fit = Math.min(vw / 2400, vh / 1350);
+    const scale = Math.max(1, Math.min(1.6, fit));
     const scaled = scale > 1.001;
     const root = document.documentElement;
     const holder = document.querySelector(".holder");
@@ -1682,7 +1681,8 @@
     set("#dockFreeSub", tr("port.dockWeek"));
     set("#dockRoutesLabel", tr("port.dockRoutes"));
     set("#dockRoutesSub", tr("port.dockRoutesSub"));
-    set("#dockActionLabel", tr("port.dockFlow"));
+    const rec = recommendedActions()[0];
+    set("#deckNext", rec ? rec.label : tr("port.nextFlow"));
   }
 
   function portStatusFor(provider) {
@@ -1723,6 +1723,57 @@
       }).join("")}
       ${untested ? `<div class="quay-note">${esc(tr("port.quayIdle", { n: untested }))}</div>` : ""}
       ${!untested && fail.length ? `<div class="quay-note">${esc(tr("port.quayAttention", { n: fail.length }))}</div>` : ""}
+    </div>`;
+  }
+
+  function quotaResetIn(iso) {
+    const ms = new Date(iso) - Date.now();
+    if (!Number.isFinite(ms) || ms <= 0) return "—";
+    const hours = Math.round(ms / 36e5);
+    return hours >= 48 ? `${Math.round(hours / 24)}d` : `${hours}h`;
+  }
+
+  function limitsBlock() {
+    const q = state.snap?.quota || {};
+    const rows = [];
+    if (q.codex?.available) rows.push({ name: "Codex", plan: q.codex.plan || "", free: q.codex.week_free, reset: q.codex.week_reset, color: "#C8F169" });
+    if (q.claude?.available) rows.push({ name: "Claude", plan: "", free: q.claude.week_free, reset: q.claude.week_reset, color: "#FF8A70" });
+    const googleOff = q.google && q.google.available === false;
+    if (!rows.length && !googleOff) return "";
+    return `<div class="ins-block ins-limits">
+      <span class="ins-label">${esc(tr("port.limits"))}</span>
+      ${rows.map((r) => {
+        const free = Number(r.free);
+        const used = Number.isFinite(free) ? Math.max(0, Math.min(100, 100 - free)) : 0;
+        const label = Number.isFinite(free)
+          ? tr(r.plan ? "port.planFree" : "port.planFreeNoPlan", { plan: r.plan, pct: pct(free, 0) })
+          : tr("port.noQuota");
+        return `<div class="lim-row" style="--pc:${r.color}">
+          <div class="lim-head"><b>${esc(r.name)}</b><em>${esc(label)}</em></div>
+          <div class="lim-bar"><i style="width:${used}%"></i></div>
+          <div class="lim-foot"><span>${esc(tr("port.weekUsed", { pct: pct(used, 0) }))}</span><span>${esc(tr("port.resetIn", { d: quotaResetIn(r.reset) }))}</span></div>
+        </div>`;
+      }).join("")}
+      ${googleOff ? `<div class="lim-row is-off"><div class="lim-head"><b>Google</b><em>${esc(tr("port.noQuota"))}</em></div></div>` : ""}
+      <button class="lim-more" data-act="wing" data-key="fluxo">${esc(tr("port.nextFlow"))} →</button>
+    </div>`;
+  }
+
+  function projectsBlock() {
+    const list = [...(state.snap?.projects || [])]
+      .sort((a, b) => (b.sessions || 0) - (a.sessions || 0))
+      .slice(0, 4);
+    if (!list.length) return "";
+    return `<div class="ins-block ins-projects">
+      <div class="ins-label-row">
+        <span class="ins-label">${esc(tr("port.projects"))}</span>
+        <button class="lim-more" data-act="wing" data-key="sessoes">${esc(tr("port.allProjects"))} →</button>
+      </div>
+      ${list.map((p) => `<button class="proj-row" data-act="wing" data-key="sessoes">
+        <i></i>
+        <span><b>${esc(p.name)}</b><em>${esc((p.ais || []).join(" · "))} · ${esc(tr("port.sessionsShort", { n: int(p.sessions || 0) }))}</em></span>
+        <strong>${esc(p.last_activity || "")}</strong>
+      </button>`).join("")}
     </div>`;
   }
 
@@ -1770,6 +1821,8 @@
         <div><span>${esc(tr("common.model"))}</span><b class="is-model">${esc(modelName(S.insights?.topModel?.model) || "—")}</b></div>
       </div>
       ${rhythm}
+      ${limitsBlock()}
+      ${projectsBlock()}
       ${quayBlock()}
       <div class="ins-block">
         <span class="ins-label">${esc(tr("port.nextAction"))}</span>
@@ -1904,8 +1957,10 @@
     const bottomPad = overlays(dock) ? Math.max(0, rect.bottom - dock.getBoundingClientRect().top) + 14 : 10;
     const freeH = Math.max(240, rect.height - topPad - bottomPad);
     const narrow = rect.width < 620;
-    const contentW = narrow ? 900 : 1070;
-    const contentH = narrow ? 700 : 770;
+    // O deck novo não sobrepõe HUD/dock: a cena inteira cabe no cartão.
+    const framed = overlays(hud) || overlays(dock);
+    const contentW = narrow ? 900 : framed ? 1070 : 1080;
+    const contentH = narrow ? 700 : framed ? 770 : 920;
     const scale = Math.max(contentW / rect.width, contentH / freeH);
     const vbW = (rect.width * scale) / p.k;
     const vbH = (rect.height * scale) / p.k;
@@ -2704,12 +2759,20 @@
     }
   }
 
-  function toggleLight() {
-    const dusk = app.dataset.light !== "dusk";
+  function applyLight(mode) {
+    const dusk = mode === "dusk";
     app.dataset.light = dusk ? "dusk" : "day";
+    document.documentElement.dataset.light = dusk ? "dusk" : "day";
     $("#lightLabel").textContent = tr(dusk ? "topbar.dusk" : "topbar.day");
-    store.set("light", dusk ? "dusk" : "day");
-    toast(dusk ? "Modo crepúsculo · constelações ligadas" : "Modo dia · céu aberto");
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", dusk ? "#050B0E" : "#F4F0E5");
+  }
+
+  function toggleLight() {
+    const next = app.dataset.light === "dusk" ? "day" : "dusk";
+    applyLight(next);
+    store.set("lightMode", next);
+    toast(next === "dusk" ? tr("topbar.nightOn") : tr("topbar.dayOn"));
   }
 
   /* ---------------------------------------------------------- toast / confetti / copy */
@@ -2952,11 +3015,8 @@
     $("#pipCompanion").addEventListener("click", () => openWing("oraculo"));
     $("#pipCompanion").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWing("oraculo"); } });
     window.addEventListener("resize", scaleStage);
-    const savedLight = store.get("light", "day");
-    if (savedLight === "dusk") {
-      app.dataset.light = "dusk";
-      $("#lightLabel").textContent = tr("topbar.dusk");
-    }
+    const savedLight = store.get("lightMode", "dusk");
+    applyLight(savedLight === "dusk" ? "dusk" : "day");
   }
 
   /* ---------------------------------------------------------- keyboard */
@@ -3107,8 +3167,7 @@
       const names = { agora: "now", provedores: "providers", erros: "errors", dicas: "tips" };
       b.textContent = tr(`cockpit.${names[b.dataset.tab] || b.dataset.tab}`);
     });
-    const dusk = app.dataset.light === "dusk";
-    $("#lightLabel").textContent = tr(dusk ? "topbar.dusk" : "topbar.day");
+    applyLight(app.dataset.light);
     $("#localeLabel").textContent = `${state.lang.toUpperCase()} · ${CURRENCIES[state.currency]}`;
     $("#localeBtn").title = tr("topbar.locale");
     $("#guideBtn").title = tr("topbar.guide");
