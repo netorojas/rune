@@ -3182,6 +3182,11 @@ html.ui-scaled .app.port-shell { height: 100%; }
   .days-table .w-row .r-main { flex-direction: column; align-items: flex-start; gap: 1px; }
   .days-table .w-row { grid-template-columns: minmax(0, 1fr) 54px 64px 62px !important; gap: 8px; }
   .days-table .w-row > span:nth-child(5) { display: none; }
+  .conn-table .w-row { grid-template-columns: minmax(0, 1fr) 62px !important; gap: 8px; }
+  .conn-table .w-row > span:nth-child(3),
+  .conn-table .w-row > span:nth-child(4) { display: none; }
+  .conn-table .w-row .r-main { flex-direction: column; align-items: flex-start; gap: 1px; }
+  .conn-table .w-row .r-main span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .w-health-foot { flex-wrap: wrap; align-items: flex-start; }
   .w-health-actions { flex-basis: 100%; flex-wrap: wrap; }
   .w-health-actions .btn { flex: 1 1 auto; padding: 4px 8px; font-size: 11px; justify-content: center; }

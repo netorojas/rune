@@ -4999,7 +4999,7 @@
         </div>
         <div class="profile-card">
           <div class="w-card-head"><div><h3>Conexões da frota</h3><p>${keys.length} provedores · nenhuma credencial exibida</p></div><span class="pill">9router</span></div>
-          <div class="w-table">
+          <div class="w-table conn-table">
             ${keys.map((k) => {
               const c = connFor(k);
               const st = providerStatus(k);
