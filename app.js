@@ -1683,6 +1683,14 @@
     set("#dockRoutesSub", tr("port.dockRoutesSub"));
     const rec = recommendedActions()[0];
     set("#deckNext", rec ? rec.label : tr("port.nextFlow"));
+    const nextWrap = $("#deckNextWrap");
+    if (nextWrap) {
+      nextWrap.dataset.act = rec?.act || "wing";
+      if (rec?.wing) nextWrap.dataset.key = rec.wing;
+      else delete nextWrap.dataset.key;
+      if (rec?.detail) nextWrap.title = rec.detail;
+      else nextWrap.removeAttribute("title");
+    }
   }
 
   function portStatusFor(provider) {
@@ -1705,25 +1713,13 @@
     const fkeys = fleetKeys();
     if (!fkeys.length) return "";
     const results = fkeys.filter((k) => probeFor(k) && probeFor(k).status !== "running");
-    const ok = results.filter((k) => probeFor(k).status === "ok");
-    const fail = results.filter((k) => probeFor(k).status === "fail");
-    const untested = fkeys.length - results.length;
-    const rows = [...fail, ...ok].slice(0, 4);
+    const ok = results.filter((k) => probeFor(k).status === "ok").length;
     const busy = state.probingAll;
-    return `<div class="ins-block ins-quay">
-      <span class="ins-label">${esc(tr("port.quay"))}</span>
-      <div class="quay-head">
-        <b>${esc(tr("port.quayCount", { ok: ok.length, total: fkeys.length }))}</b>
-        <button class="quay-test" data-act="probe-all"${busy ? " disabled" : ""}>${esc(busy ? tr("port.quayTesting") : tr("port.quayTest"))}</button>
-      </div>
-      ${rows.map((k) => {
-        const p = probeFor(k);
-        const msg = p.status === "ok" ? (p.model || "") : friendlyError(p.error);
-        return `<button class="quay-row ${p.status === "ok" ? "ok" : "bad"}" data-act="provider-detail" data-key="${esc(k)}" title="${esc(msg)}"><i></i><b>${esc(provMeta(k).name)}</b><em>${esc(msg || "—")}</em><span>→</span></button>`;
-      }).join("")}
-      ${untested ? `<div class="quay-note">${esc(tr("port.quayIdle", { n: untested }))}</div>` : ""}
-      ${!untested && fail.length ? `<div class="quay-note">${esc(tr("port.quayAttention", { n: fail.length }))}</div>` : ""}
-    </div>`;
+    return `<button class="quay-strip" data-act="${busy ? "probe-all" : "wing"}"${busy ? " disabled" : ' data-key="biblioteca"'}>
+      <i></i>
+      <span><b>${esc(tr("port.quay"))}</b><em>${esc(tr("port.quayCount", { ok, total: fkeys.length }))}</em></span>
+      <strong>${esc(busy ? tr("port.quayTesting") : tr("port.quayTest"))}</strong>
+    </button>`;
   }
 
   function quotaResetIn(iso) {
@@ -1777,66 +1773,43 @@
     </div>`;
   }
 
+  function tidyDetail(raw) {
+    let s = String(raw || "").replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
+    const code = (s.match(/^\[(\d{3})\]/) || [])[1];
+    const msg = s.match(/"message"\s*:\s*"([^"]{4,300})/);
+    if (msg) s = `${code ? `[${code}] ` : ""}${msg[1]}`;
+    s = s.replace(/[{}]/g, " ").replace(/\s+/g, " ").trim();
+    return s.length > 140 ? `${s.slice(0, 137).replace(/[\s,;:.]+$/, "")}…` : s;
+  }
+
+  function suggestionsBlock() {
+    const list = (state.snap?.suggestions || []).slice(0, 3);
+    if (!list.length) return "";
+    return `<div class="ins-block ins-sugg">
+      <span class="ins-label">${esc(tr("port.ideas"))}</span>
+      ${list.map((s) => `<div class="sugg-row ${esc(s.level || "")}">
+        <i></i>
+        <span><b>${esc(s.title)}</b><em>${esc(tidyDetail(s.detail))}</em></span>
+      </div>`).join("")}
+      <button class="lim-more" data-act="wing" data-key="oraculo">${esc(tr("port.openIdeas"))} →</button>
+    </div>`;
+  }
+
   function portInspectorToday() {
     const S = state.snap;
     const t = S.today || {};
-    const next = recommendedActions()[0];
-    const free = S.quota?.codex?.available ? S.quota.codex.week_free : state.sunStates[0]?.pct;
     const bad = (S.connections || []).filter((c) => c.status && c.status !== "active").length;
     const d = dateObj(S.meta?.now) || new Date();
-    const nextAction = next
-      ? `<button class="ins-action" data-act="${esc(next.act || "wing")}"${next.wing ? ` data-key="${esc(next.wing)}"` : ""}>
-          <span><b>${esc(next.label)}</b><em>${esc(next.detail)}</em></span><i>→</i>
-        </button>`
-      : `<button class="ins-action" data-act="wing" data-key="fluxo"><span><b>${esc(tr("port.nextFlow"))}</b><em>${esc(tr("port.nextFlowSub"))}</em></span><i>→</i></button>`;
-    const series = (S.series || []).slice(-7);
-    const peak = Math.max(1, ...series.map((s) => s.tokens || 0));
-    const todayKey = String(S.meta?.now || "").slice(0, 10);
-    const rhythm = series.length
-      ? `<div class="ins-block ins-rhythm">
-          <span class="ins-label">${esc(tr("port.rhythm"))}</span>
-          <div class="rhythm">
-            ${series.map((s) => {
-              const h = Math.max(5, Math.round(((s.tokens || 0) / peak) * 100));
-              const isToday = s.date === todayKey;
-              return `<div class="rhythm-col${isToday ? " today" : ""}" title="${esc(s.label)} · ${compact(s.tokens || 0)} ${esc(tr("common.tokens"))} · ${int(s.requests || 0)} ${esc(tr("port.rhythmCalls"))}">
-                <i style="--h:${h}%"></i><span>${esc(s.weekday || "")}</span>
-              </div>`;
-            }).join("")}
-          </div>
-        </div>`
-      : "";
     return `<div class="ins-head">
         <span class="ins-eyebrow">${esc(tr("common.today")).toUpperCase()} · ${String(d.getDate()).padStart(2, "0")} ${monthShort(d).toUpperCase()}</span>
         <span class="ins-status ${bad ? "warn" : "ok"}"><i></i>${esc(bad ? tr("port.attention") : tr("port.collecting"))}</span>
       </div>
       <h2 class="ins-title">${esc(tr("port.todayTitle"))}</h2>
       <p class="ins-lead">${esc(tr("port.lead", { tokens: compact(t.tokens || 0), calls: int(t.requests || 0), cache: pct(S.totals?.cacheHit || 0) }))}</p>
-      <div class="ins-stats">
-        <div><span>${esc(tr("common.tokens"))}</span><b>${compact(t.tokens || 0)}</b></div>
-        <div><span>${esc(tr("common.cost"))}</span><b>${money(t.cost || 0)}</b></div>
-        <div><span>${esc(tr("common.calls"))}</span><b>${int(t.requests || 0)}</b></div>
-        <div><span>${esc(tr("common.cache"))}</span><b>${pct(S.totals?.cacheHit || 0)}</b></div>
-        <div><span>${esc(tr("port.headroom"))}</span><b>${free != null ? pct(free, 0) : "—"}</b></div>
-        <div><span>${esc(tr("common.model"))}</span><b class="is-model">${esc(modelName(S.insights?.topModel?.model) || "—")}</b></div>
-      </div>
-      ${rhythm}
       ${limitsBlock()}
       ${projectsBlock()}
+      ${suggestionsBlock()}
       ${quayBlock()}
-      <div class="ins-block">
-        <span class="ins-label">${esc(tr("port.nextAction"))}</span>
-        ${nextAction}
-      </div>
-      <div class="ins-block">
-        <span class="ins-label">${esc(tr("port.roles"))}</span>
-        <div class="ins-roles">
-          <div><i class="lg lg-source"></i><span><b>9router</b><em>${esc(tr("port.roleSource"))}</em></span></div>
-          <div><i class="lg lg-ai"></i><span><b>${esc(tr("port.roleAiName"))}</b><em>${esc(tr("port.roleAi"))}</em></span></div>
-          <div><i class="lg lg-tool"></i><span><b>${esc(tr("port.roleToolName"))}</b><em>${esc(tr("port.roleTool"))}</em></span></div>
-        </div>
-      </div>
-      <p class="ins-note">${esc(tr("port.inspectorHint"))}</p>
       <button class="ins-cta" data-act="manual">${esc(tr("port.howTo"))} <span>5 ${esc(tr("port.steps"))}</span></button>`;
   }
 
