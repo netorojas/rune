@@ -275,7 +275,7 @@
     return {
       global: Number.isFinite(global) && global > 0 ? Math.round(global * 100) / 100 : null,
       providers,
-      threshold: [60, 70, 80, 90].includes(threshold) ? threshold : 80,
+      threshold: [50, 60, 70, 80, 90].includes(threshold) ? threshold : 80,
     };
   };
 
@@ -341,6 +341,7 @@
         providers,
       });
       store.set("budgets", state.budgets);
+      state.pendingBudgets = true;
     }
     store.set("costBase", "USD");
   }
@@ -435,6 +436,16 @@
     holder.style.height = "auto";
   }
 
+  async function pushSettings(payload) {
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
   async function loadSnapshot() {
     try {
       const res = await fetch("/api/snapshot", { cache: "no-store" });
@@ -461,6 +472,19 @@
     }
     state.sunStates = Array.isArray(data.sunStates) ? data.sunStates : [];
     state.sunIndex = Math.min(state.sunIndex, Math.max(0, state.sunStates.length - 1));
+
+    const serverBudgets = data.settings?.budgets;
+    if (serverBudgets) {
+      const hasServer = Boolean(serverBudgets.global) || Object.keys(serverBudgets.providers || {}).length > 0;
+      const hasLocal = Boolean(state.budgets.global) || Object.keys(state.budgets.providers).length > 0;
+      if (!hasServer && hasLocal && state.pendingBudgets) {
+        state.pendingBudgets = false;
+        pushSettings({ budgets: state.budgets }).catch(() => { state.pendingBudgets = true; });
+      } else {
+        state.budgets = normalizeBudgets(serverBudgets);
+        store.set("budgets", state.budgets);
+      }
+    }
 
     renderTopbar();
     renderSun();
@@ -2382,23 +2406,17 @@
   /* ---------------------------------------------------------- cockpit */
 
   function monthUsage() {
-    const S = state.snap;
-    if (!S?.today?.date) return null;
-    const month = S.today.date.slice(0, 7);
-    const rows = (S.series || []).filter((d) => String(d.date).slice(0, 7) === month);
-    const byProvider = {};
-    let cost = 0;
-    rows.forEach((d) => {
-      cost += Number(d.cost) || 0;
-      Object.entries(d.providers || {}).forEach(([key, val]) => {
-        byProvider[key] = (byProvider[key] || 0) + (Number(val?.cost) || 0);
-      });
-    });
-    const [year, mon, day] = S.today.date.split("-").map(Number);
-    const daysInMonth = new Date(year, mon, 0).getDate();
-    const elapsed = Math.max(1, day);
-    const projected = (cost / elapsed) * daysInMonth;
-    return { month, cost, byProvider, elapsed, daysInMonth, projected, days: rows.length };
+    const m = state.snap?.month;
+    if (!m?.month) return null;
+    return {
+      month: m.month,
+      cost: Number(m.cost) || 0,
+      byProvider: m.byProvider || {},
+      elapsed: m.elapsed || 1,
+      daysInMonth: m.days_in_month || 30,
+      projected: Number(m.projected) || 0,
+      days: m.active_days || 0,
+    };
   }
 
   function budgetStatus(spent, limit) {
@@ -2410,27 +2428,20 @@
     return { pct: ratio, tone, left: limit - used };
   }
 
-  function budgetAlerts() {
-    const u = monthUsage();
-    if (!u) return [];
-    const out = [];
-    const check = (label, spent, limit, key, isGlobal = false) => {
-      const st = budgetStatus(spent, limit);
-      if (!st || st.tone === "ok") return;
-      out.push({
-        tone: st.tone === "over" ? "bad" : "warn",
-        title: isGlobal ? tr("alert.budgetTotalTitle", { pct: dec(st.pct, 0) }) : tr("alert.budgetTitle", { provider: label, pct: dec(st.pct, 0) }),
-        detail: tr("alert.budgetDetail", { used: money(spent), limit: money(limit), month: tr("budget.month") }),
-        budget: key || "global",
-      });
+  function localizeAlert(alert) {
+    if (alert.kind !== "budget") return alert;
+    const isGlobal = alert.budget === "global";
+    return {
+      ...alert,
+      title: isGlobal
+        ? tr("alert.budgetTotalTitle", { pct: dec(alert.pct, 0) })
+        : tr("alert.budgetTitle", { provider: provName(alert.budget), pct: dec(alert.pct, 0) }),
+      detail: tr("alert.budgetDetail", { used: money(alert.spent), limit: money(alert.limit), month: tr("budget.month") }),
     };
-    check(tr("budget.total"), u.cost, state.budgets.global, "global", true);
-    Object.entries(state.budgets.providers).forEach(([key, limit]) => check(provName(key), u.byProvider[key] || 0, limit, key));
-    return out;
   }
 
   function allAlerts() {
-    return [...budgetAlerts(), ...(state.snap?.alerts || [])];
+    return (state.snap?.alerts || []).map(localizeAlert);
   }
 
   function renderCockpit() {
@@ -2791,6 +2802,7 @@
   });
   act("settings", () => openSettingsDrawer());
   act("settings-close", () => closeDrawer());
+  act("alerts-save", () => saveAlerts());
   act("budget", () => openBudgetDrawer());
   act("budget-save", () => saveBudgets());
   act("budget-threshold", (el) => {
@@ -2798,13 +2810,16 @@
     store.set("budgets", state.budgets);
     renderBudgetBody();
     if (state.snap) { renderCockpit(); renderBand(); }
+    persistBudgets().catch((err) => toast(tr("budget.saveFailed", { err: err.message }), "bad"));
   });
   act("budget-reset", () => {
     state.budgets = normalizeBudgets({});
     store.set("budgets", state.budgets);
     renderBudgetBody();
     if (state.snap) { renderCockpit(); renderBand(); }
-    toast(tr("budget.saved"));
+    persistBudgets()
+      .then(() => toast(tr("budget.saved")))
+      .catch((err) => toast(tr("budget.saveFailed", { err: err.message }), "bad"));
   });
   act("sec-refresh", () => { state.security = null; loadSecurity(); });
   act("sec-copy", (el) => copyText(el.dataset.fix, tr("security.copied")));
@@ -3152,6 +3167,9 @@
         <em>BRL</em>
       </label>`).join("");
     const langLabel = (I18N?.languages || []).find((l) => l.code === state.lang)?.label || state.lang;
+    const alertsCfg = state.snap?.settings?.alerts || { macos: true, cooldown_min: 360, webhook_set: false, webhook_host: "" };
+    const cooldowns = [60, 180, 360, 720, 1440].map((v) =>
+      `<option value="${v}"${v === alertsCfg.cooldown_min ? " selected" : ""}>${esc(tr("settings.cooldown", { h: v / 60 }))}</option>`).join("");
     $("#drawerBody").innerHTML = `
       <span class="drw-eyebrow">${esc(tr("settings.eyebrow"))}</span>
       <div class="drw-head">
@@ -3161,6 +3179,18 @@
       <div class="drw-section"><h3>${esc(tr("settings.language"))}</h3><div class="set-grid">${languages}</div><div class="drw-note">${esc(tr("settings.languageSub"))}</div></div>
       <div class="drw-section"><h3>${esc(tr("settings.currency"))}</h3><div class="set-grid">${currencies}</div></div>
       <div class="drw-section"><h3>${esc(tr("settings.rates"))}</h3><div class="set-rates">${rates}</div><div class="drw-note">${esc(tr("settings.ratesNote"))}</div></div>
+      <div class="drw-section"><h3>${esc(tr("settings.alerts"))}</h3>
+        <div class="set-alert">
+          <label class="set-check"><input type="checkbox" data-alert="macos"${alertsCfg.macos ? " checked" : ""}><span><b>${esc(tr("settings.alertsMacos"))}</b><em>${esc(tr("settings.alertsMacosSub"))}</em></span></label>
+          <label class="set-field"><span>${esc(tr("settings.alertsWebhook"))}</span>
+            <input type="password" data-alert="webhook" autocomplete="off" spellcheck="false" placeholder="${esc(alertsCfg.webhook_set ? tr("settings.alertsWebhookSet", { host: alertsCfg.webhook_host }) : "https://")}">
+          </label>
+          ${alertsCfg.webhook_set ? `<label class="set-check"><input type="checkbox" data-alert="webhook-clear"><span><b>${esc(tr("settings.alertsWebhookClear"))}</b></span></label>` : ""}
+          <label class="set-field"><span>${esc(tr("settings.alertsCooldown"))}</span><select data-alert="cooldown">${cooldowns}</select></label>
+        </div>
+        <div class="drw-note">${esc(tr("settings.alertsNote"))}</div>
+        <div class="set-alert-actions"><button class="btn primary" data-act="alerts-save">${esc(tr("settings.alertsSave"))}</button></div>
+      </div>
       <div class="drw-note">${esc(tr("settings.beta", { lang: langLabel }))}</div>
       <div class="drw-actions"><button class="btn primary" data-act="settings-close">${esc(tr("common.done"))}</button></div>
     `;
@@ -3175,6 +3205,31 @@
         }
       });
     });
+  }
+
+  function saveAlerts() {
+    const alerts = {};
+    const macos = $("#drawerBody [data-alert='macos']");
+    if (macos) alerts.macos = macos.checked;
+    const webhook = $("#drawerBody [data-alert='webhook']");
+    if (webhook && webhook.value.trim()) alerts.webhook = webhook.value.trim();
+    const clear = $("#drawerBody [data-alert='webhook-clear']");
+    if (clear && clear.checked) alerts.webhook_clear = true;
+    const cooldown = $("#drawerBody [data-alert='cooldown']");
+    if (cooldown) alerts.cooldown_min = Number(cooldown.value);
+    pushSettings({ alerts })
+      .then((data) => {
+        if (state.snap && data?.alerts) {
+          state.snap.settings = {
+            budgets: data.budgets,
+            alerts: data.alerts,
+            updated_at: data.updated_at,
+          };
+        }
+        renderSettingsBody();
+        toast(tr("settings.saved"));
+      })
+      .catch((err) => toast(tr("budget.saveFailed", { err: err.message }), "bad"));
   }
 
   function recommendedActions() {
@@ -3438,11 +3493,11 @@
             <label class="bud-input"><span>${CURRENCIES[state.currency] || ""}</span><input type="number" name="budget-${esc(key)}" step="1" min="0" placeholder="${esc(tr("budget.placeholder"))}" data-budget="p:${esc(key)}" value="${limit ? toDisplay(limit).toFixed(2) : ""}" aria-label="${esc(tr("budget.provider"))} ${esc(provName(key))}"></label>
           </div>
           ${limit ? `<span class="bud-track ${ps.tone}"><i style="width:${clamp(ps.pct)}%"></i><span class="bud-track-mark" style="left:${b.threshold}%"></span></span>
-          <span class="bud-row-sub">${esc(tr("budget.usedOf", { used: money(u?.byProvider[key] || 0), limit: money(limit), pct: pct(ps.pct, 0) }))}${ps.tone !== "ok" ? ` · ${esc(ps.tone === "over" ? tr("budget.over", { v: money(-ps.left) }) : tr("budget.remaining", { v: money(ps.left) }))}` : ""}</span>`
+          <span class="bud-row-sub">${esc(tr("budget.usedOf", { used: money(u?.byProvider[key] || 0), limit: money(limit), pct: dec(ps.pct, 0) }))}${ps.tone !== "ok" ? ` · ${esc(ps.tone === "over" ? tr("budget.over", { v: money(-ps.left) }) : tr("budget.remaining", { v: money(ps.left) }))}` : ""}</span>`
             : `<span class="bud-row-sub">${esc(tr("budget.noLimit"))}</span>`}
         </div>`;
       }).join("");
-    const thresholdBtns = [60, 70, 80, 90].map((v) => `<button class="bud-th${v === b.threshold ? " on" : ""}" data-act="budget-threshold" data-v="${v}">${v}%</button>`).join("");
+    const thresholdBtns = [50, 60, 70, 80, 90].map((v) => `<button class="bud-th${v === b.threshold ? " on" : ""}" data-act="budget-threshold" data-v="${v}">${v}%</button>`).join("");
     $("#drawerBody").innerHTML = `
       <span class="drw-eyebrow">${esc(tr("budget.eyebrow"))}</span>
       <div class="drw-head">
@@ -3452,7 +3507,7 @@
       <div class="bud-hero ${st?.tone || ""}">
         <div class="bud-hero-top"><span>${esc(tr("budget.total"))}</span><b>${money(spent)}</b><em>${b.global ? esc(`/ ${money(b.global)}`) : esc(tr("budget.noLimit"))}</em></div>
         ${b.global ? `<span class="bud-bar ${st.tone}"><i style="width:${clamp(st.pct)}%"></i><span class="bud-bar-mark" style="left:${b.threshold}%"></span></span>
-        <div class="bud-hero-foot"><span>${esc(tr("budget.usedOf", { used: money(spent), limit: money(b.global), pct: pct(st.pct, 0) }))}</span><span>${esc(tr("budget.forecast", { v: money(u.projected) }))}</span></div>` : ""}
+        <div class="bud-hero-foot"><span>${esc(tr("budget.usedOf", { used: money(spent), limit: money(b.global), pct: dec(st.pct, 0) }))}</span><span>${esc(tr("budget.forecast", { v: money(u.projected) }))}</span></div>` : ""}
       </div>
       <div class="drw-section"><h3>${esc(tr("budget.global"))}</h3>
         <label class="bud-input wide"><span>${CURRENCIES[state.currency] || ""}</span><input type="number" name="budget-global" step="1" min="0" placeholder="${esc(tr("budget.placeholder"))}" data-budget="global" value="${globalValue}" aria-label="${esc(tr("budget.global"))}"><em>${esc(tr("budget.month"))}</em></label>
@@ -3465,6 +3520,16 @@
         <button class="btn ghost" data-act="budget-reset">${esc(tr("budget.reset"))}</button>
       </div>
     `;
+  }
+
+  function persistBudgets() {
+    return pushSettings({ budgets: state.budgets }).then((data) => {
+      if (data?.budgets) {
+        state.budgets = normalizeBudgets(data.budgets);
+        store.set("budgets", state.budgets);
+      }
+      return data;
+    });
   }
 
   function saveBudgets() {
@@ -3483,7 +3548,9 @@
       renderCockpit();
       renderBand();
     }
-    toast(tr("budget.saved"));
+    persistBudgets()
+      .then(() => toast(tr("budget.saved")))
+      .catch((err) => toast(tr("budget.saveFailed", { err: err.message }), "bad"));
   }
 
   function openProviderDrawer(key) {

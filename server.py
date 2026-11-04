@@ -7,7 +7,9 @@ prompts. Escuta exclusivamente em 127.0.0.1.
 """
 from __future__ import annotations
 
+import calendar
 import json
+import math
 import os
 import re
 import socket
@@ -35,6 +37,8 @@ if not COLLECT.exists() and COLLECT_LOCAL.exists():
 ROUTER_DB = Path.home() / ".9router" / "db" / "data.sqlite"
 RUNE_DATA = BASE / ".rune-data"
 FLEET_FILE = RUNE_DATA / "fleet.json"
+SETTINGS_FILE = RUNE_DATA / "settings.json"
+NOTIFY_FILE = RUNE_DATA / "notify.json"
 QODER_DB = Path.home() / "Library" / "Application Support" / "com.qoder.app.stable" / "main.sqlite"
 HOST = os.environ.get("RUNE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RUNE_PORT", "8770"))
@@ -151,9 +155,257 @@ def _origin_matches(origin: str, host: str) -> bool:
     return bool(origin_host) and origin_host == req_host
 
 
+BUDGET_MAX = 1_000_000.0
+_PROVIDER_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
+_settings_save_lock = threading.Lock()
+
+
+def _positive_number(value):
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    return n if math.isfinite(n) and 0 < n <= BUDGET_MAX else None
+
+
+def _budget_map(raw) -> dict:
+    out: dict[str, float] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in list(raw.items())[:40]:
+        name = str(key).strip().lower()
+        amount = _positive_number(value)
+        if _PROVIDER_KEY_RE.match(name) and amount:
+            out[name] = round(amount, 2)
+    return out
+
+
+def _webhook_url(value) -> str:
+    """Webhook só para HTTPS ou loopback: custo não sai para um destino inseguro."""
+    url = str(value or "").strip()
+    if not url or len(url) > 500:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return ""
+    if parsed.scheme == "https" and parsed.hostname:
+        return url
+    if parsed.scheme == "http" and (parsed.hostname or "").lower() in ("127.0.0.1", "localhost", "::1"):
+        return url
+    return ""
+
+
+def normalize_settings(raw) -> dict:
+    src = raw if isinstance(raw, dict) else {}
+    budgets = src.get("budgets") if isinstance(src.get("budgets"), dict) else {}
+    alerts = src.get("alerts") if isinstance(src.get("alerts"), dict) else {}
+    try:
+        threshold = int(budgets.get("threshold"))
+    except (TypeError, ValueError):
+        threshold = 80
+    if threshold not in (50, 60, 70, 80, 90):
+        threshold = 80
+    try:
+        cooldown = int(alerts.get("cooldown_min"))
+    except (TypeError, ValueError):
+        cooldown = 360
+    return {
+        "budgets": {
+            "global": round(_positive_number(budgets.get("global")) or 0, 2) or None,
+            "providers": _budget_map(budgets.get("providers")),
+            "threshold": threshold,
+        },
+        "alerts": {
+            "macos": bool(alerts.get("macos", True)),
+            "webhook": _webhook_url(alerts.get("webhook")),
+            "cooldown_min": min(1440, max(5, cooldown)),
+        },
+    }
+
+
+def load_settings() -> dict:
+    return normalize_settings(_read_json(SETTINGS_FILE))
+
+
+def _write_private(path: Path, payload: dict) -> None:
+    RUNE_DATA.mkdir(parents=True, exist_ok=True)
+    os.chmod(RUNE_DATA, 0o700)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def save_settings(settings: dict) -> dict:
+    clean = normalize_settings(settings)
+    with _settings_save_lock:
+        _write_private(SETTINGS_FILE, {
+            "version": 1,
+            "updated_at": datetime.now().astimezone().isoformat(),
+            **clean,
+        })
+    return clean
+
+
+def public_settings() -> dict:
+    """O webhook nunca volta completo: o token na URL é um segredo, como uma chave."""
+    settings = load_settings()
+    webhook = settings["alerts"]["webhook"]
+    host = ""
+    if webhook:
+        try:
+            host = urlparse(webhook).hostname or ""
+        except ValueError:
+            host = ""
+    updated = _read_json(SETTINGS_FILE).get("updated_at")
+    return {
+        "budgets": settings["budgets"],
+        "alerts": {
+            "macos": settings["alerts"]["macos"],
+            "cooldown_min": settings["alerts"]["cooldown_min"],
+            "webhook_set": bool(webhook),
+            "webhook_host": host,
+        },
+        "updated_at": updated if isinstance(updated, str) else None,
+    }
+
+
+def budget_alerts(month: dict, settings: dict) -> list[dict]:
+    """Alertas de orçamento calculados no servidor: valem com a aba fechada e vão para o webhook."""
+    threshold = settings["budgets"]["threshold"]
+    rows: list[dict] = []
+
+    def check(scope: str, label: str, spent: float, limit: float | None, is_global: bool) -> None:
+        if not limit:
+            return
+        ratio = round(spent / limit * 100, 1)
+        if ratio < threshold:
+            return
+        over = ratio >= 100
+        rows.append({
+            "kind": "budget",
+            "key": f"budget:{scope}",
+            "budget": "global" if is_global else scope,
+            "level": "over" if over else "warn",
+            "tone": "bad" if over else "warn",
+            "pct": ratio,
+            "spent": round(spent, 4),
+            "limit": round(limit, 2),
+            "title": f"Orçamento {'estourado' if over else 'perto do limite'} · {label} ({ratio:.0f}%)",
+            "detail": f"US$ {spent:.2f} de US$ {limit:.2f} no mês. Projeção US$ {float(month.get('projected') or 0):.2f}.",
+            "provider": "budget" if is_global else scope,
+        })
+
+    if month:
+        check("global", "total", float(month.get("cost") or 0), settings["budgets"]["global"], True)
+        for provider, limit in settings["budgets"]["providers"].items():
+            spent = (month.get("byProvider") or {}).get(provider, 0)
+            check(provider, provider, float(spent or 0), limit, False)
+    rows.sort(key=lambda r: (r["budget"] != "global", -r["pct"]))
+    return rows
+
+
+def due_alerts(alerts: list[dict], previous: dict, now: datetime, cooldown_min: int) -> list[dict]:
+    """Repete o aviso só quando o nível muda ou o cooldown venceu."""
+    due = []
+    for alert in alerts:
+        prev = previous.get(alert["key"]) or {}
+        try:
+            last = datetime.fromisoformat(str(prev.get("at") or ""))
+        except ValueError:
+            last = None
+        if last is not None and last.tzinfo is None:
+            last = last.astimezone()
+        if prev.get("level") != alert["level"] or last is None or (now - last) >= timedelta(minutes=cooldown_min):
+            due.append(alert)
+    return due
+
+
+def _notify_state() -> dict:
+    raw = _read_json(NOTIFY_FILE)
+    alerts = raw.get("alerts") if isinstance(raw.get("alerts"), dict) else {}
+    return {str(key): value for key, value in alerts.items() if isinstance(value, dict)}
+
+
+def _macos_notification(title: str, message: str) -> None:
+    script = 'on run argv\n  display notification (item 2 of argv) with title (item 1 of argv)\nend run'
+    subprocess.run(["osascript", "-e", script, title, message], capture_output=True, timeout=8)
+
+
+def _post_webhook(url: str, payload: dict) -> None:
+    target = _webhook_url(url)
+    if not target:
+        return
+    request = urlrequest.Request(
+        target,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "rune-live"},
+        method="POST",
+    )
+    with urlrequest.urlopen(request, timeout=5) as response:
+        response.read(256)
+
+
+def alert_cycle(now: datetime | None = None, deliver: bool = True) -> dict:
+    settings = load_settings()
+    month = load_router_usage(days=2).get("month") or {}
+    alerts = budget_alerts(month, settings)
+    if not alerts:
+        return {"alerts": [], "due": [], "sent": 0}
+    now = now or datetime.now().astimezone()
+    state = _notify_state()
+    due = due_alerts(alerts, state, now, settings["alerts"]["cooldown_min"])
+    if deliver and due:
+        for alert in due:
+            if settings["alerts"]["macos"]:
+                try:
+                    _macos_notification("Rune · orçamento", alert["title"])
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            if settings["alerts"]["webhook"]:
+                try:
+                    _post_webhook(settings["alerts"]["webhook"], {
+                        "source": "rune", "kind": "budget", "level": alert["level"],
+                        "budget": alert["budget"], "pct": alert["pct"],
+                        "spent_usd": alert["spent"], "limit_usd": alert["limit"],
+                        "title": alert["title"], "at": now.isoformat(),
+                    })
+                except (urlerror.URLError, TimeoutError, OSError, ValueError):
+                    pass
+        for alert in due:
+            state[alert["key"]] = {"level": alert["level"], "at": now.isoformat(), "pct": alert["pct"]}
+        try:
+            _write_private(NOTIFY_FILE, {"version": 1, "updated_at": now.isoformat(), "alerts": state})
+        except OSError:
+            pass
+    return {"alerts": alerts, "due": [a["key"] for a in due], "sent": len(due) if deliver else 0}
+
+
+def _alert_loop(interval: float) -> None:
+    time.sleep(min(interval, 15.0))
+    while True:
+        try:
+            alert_cycle()
+        except Exception:  # noqa: BLE001 — um ciclo ruim não pode derrubar o vigia
+            pass
+        time.sleep(interval)
+
+
+def start_alert_watcher() -> None:
+    if (os.environ.get("RUNE_ALERTS") or "1").strip() == "0":
+        return
+    try:
+        interval = max(30.0, float(os.environ.get("RUNE_ALERT_INTERVAL", "300")))
+    except ValueError:
+        interval = 300.0
+    threading.Thread(target=_alert_loop, args=(interval,), name="rune-alerts", daemon=True).start()
+
+
 def load_router_usage(days: int = 14) -> dict:
     """Série diária e chamadas recentes direto do banco do 9router."""
-    out = {"days": [], "recent": [], "providers": {}, "models": {}, "errors": [], "today": {}, "slo": {"providers": [], "overall": {}, "window": "7d"}}
+    out = {"days": [], "recent": [], "providers": {}, "models": {}, "errors": [], "today": {},
+           "month": {}, "slo": {"providers": [], "overall": {}, "window": "7d"}}
     conn = _ro(ROUTER_DB)
     if conn is None:
         return out
@@ -218,6 +470,10 @@ def load_router_usage(days: int = 14) -> dict:
             out["days"].append(entry)
 
         start_date = end - timedelta(days=days - 1)
+        month_start = end.replace(day=1)
+        month_active: set[str] = set()
+        month = {"month": end.strftime("%Y-%m"), "cost": 0.0, "tokens": 0, "requests": 0,
+                 "input": 0, "cached": 0, "providers": {}}
         hours: dict[str, list[dict]] = {}
         for row in conn.execute("SELECT timestamp, provider, promptTokens, completionTokens, cost, tokens FROM usageHistory"):
             raw_ts = row["timestamp"]
@@ -227,27 +483,57 @@ def load_router_usage(days: int = 14) -> dict:
                 ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone()
             except ValueError:
                 continue
+            try:
+                tok = json.loads(row["tokens"] or "{}")
+            except ValueError:
+                tok = {}
+            total = _tokens(row["promptTokens"], row["completionTokens"])
+            cost = float(row["cost"] or 0)
+            prov = row["provider"]
+
+            if ts.date() >= month_start:
+                month_active.add(ts.date().isoformat())
+                month["requests"] += 1
+                month["tokens"] += total
+                month["input"] += int(row["promptTokens"] or 0)
+                month["cached"] += int(tok.get("cached_tokens", 0) or 0)
+                month["cost"] += cost
+                mp = month["providers"].setdefault(prov, {"provider": prov, "requests": 0, "tokens": 0, "cost": 0.0})
+                mp["requests"] += 1
+                mp["tokens"] += total
+                mp["cost"] += cost
+
             if ts.date() < start_date:
                 continue
             key = ts.date().isoformat()
             bucket = hours.setdefault(key, [
                 {"hour": h, "requests": 0, "tokens": 0, "cost": 0.0, "providers": {}} for h in range(24)
             ])
-            try:
-                tok = json.loads(row["tokens"] or "{}")
-            except ValueError:
-                tok = {}
-            total = _tokens(row["promptTokens"], row["completionTokens"])
             ent = bucket[ts.hour]
             ent["requests"] += 1
             ent["tokens"] += total
-            ent["cost"] = round(ent["cost"] + float(row["cost"] or 0), 5)
-            prov = row["provider"]
+            ent["cost"] = round(ent["cost"] + cost, 5)
             p = ent["providers"].setdefault(prov, {"requests": 0, "tokens": 0, "cost": 0.0})
             p["requests"] += 1
             p["tokens"] += total
-            p["cost"] = round(p["cost"] + float(row["cost"] or 0), 5)
+            p["cost"] = round(p["cost"] + cost, 5)
         out["hours"] = hours
+
+        elapsed = max(1, end.day)
+        days_in_month = calendar.monthrange(end.year, end.month)[1]
+        month_cost = round(month["cost"], 4)
+        month["cost"] = month_cost
+        month["cache_hit"] = _pct(month["cached"], month["input"])
+        month["elapsed"] = elapsed
+        month["days_in_month"] = days_in_month
+        month["active_days"] = len(month_active)
+        month["projected"] = round(month_cost / elapsed * days_in_month, 4)
+        month["byProvider"] = {key: round(val["cost"], 4) for key, val in month["providers"].items()}
+        month["providers"] = sorted(month["providers"].values(), key=lambda x: x["cost"], reverse=True)
+        for row in month["providers"]:
+            row["cost"] = round(row["cost"], 4)
+            row["share"] = _pct(row["tokens"], month["tokens"])
+        out["month"] = month
 
         out["today"] = out["days"][-1] if out["days"] else {}
         out["providers"] = sorted(by_provider.values(), key=lambda x: x["tokens"], reverse=True)
@@ -999,7 +1285,9 @@ def build_snapshot() -> dict:
     keys = [{"name": k.get("name"), "keyId": k.get("keyId"), "active": bool(k.get("active")), "restricted": bool(k.get("restricted"))}
             for k in data.get("keys") or []]
 
-    settings = data.get("router_settings") or {}
+    router_cfg = data.get("router_settings") or {}
+    rune_settings = load_settings()
+    settings_view = public_settings()
     inventory = data.get("inventory") or {}
     codex_inv = inventory.get("codex") or {}
     qoder_inv = inventory.get("qoder") or {}
@@ -1054,7 +1342,7 @@ def build_snapshot() -> dict:
             "reset": claude_q.get("week_reset"),
         })
 
-    alerts = []
+    alerts = budget_alerts(router.get("month") or {}, rune_settings)
     seen_alerts = set()
     for e in errors[:6]:
         title = f"{e['provider']} · {e['diagnosis']['title']}"
@@ -1062,7 +1350,7 @@ def build_snapshot() -> dict:
             continue
         seen_alerts.add(title)
         alerts.append({"tone": "bad" if (e.get("code") or 0) >= 400 else "warn", "title": title, "detail": e["diagnosis"]["fix"], "provider": e["provider"]})
-    if settings.get("headroomEnabled") and not settings.get("headroom_online"):
+    if router_cfg.get("headroomEnabled") and not router_cfg.get("headroom_online"):
         alerts.append({"tone": "warn", "title": "Headroom ligado, mas offline", "detail": "Cada request tenta comprimir em localhost:8787 e falha. Ligue o serviço ou desligue a opção.", "provider": "router"})
     if today and prev and today.get("tokens", 0) > max(prev.get("tokens", 0) * 3, 1_000_000):
         alerts.append({"tone": "info", "title": "Pico de uso hoje", "detail": f"{today['tokens']/1e6:.1f}M tokens hoje contra {prev.get('tokens',0)/1e6:.2f}M ontem. O cache está segurando o custo.", "provider": "router"})
@@ -1093,6 +1381,8 @@ def build_snapshot() -> dict:
             ],
         },
         "series": days,
+        "month": router.get("month") or {},
+        "settings": settings_view,
         "hours": router.get("hours", {}),
         "totals": {
             "tokens": total_tokens, "cost": total_cost, "requests": total_req,
@@ -1114,11 +1404,11 @@ def build_snapshot() -> dict:
         "quota": quota,
         "sunStates": sun_states,
         "router": {
-            "headroom": {"enabled": bool(settings.get("headroomEnabled")), "online": bool(settings.get("headroom_online")), "url": settings.get("headroomUrl")},
-            "fallback": settings.get("fallbackStrategy"),
-            "tunnel": bool(settings.get("tunnelEnabled")),
-            "caveman": settings.get("cavemanLevel"),
-            "ponytail": settings.get("ponytailLevel"),
+            "headroom": {"enabled": bool(router_cfg.get("headroomEnabled")), "online": bool(router_cfg.get("headroom_online")), "url": router_cfg.get("headroomUrl")},
+            "fallback": router_cfg.get("fallbackStrategy"),
+            "tunnel": bool(router_cfg.get("tunnelEnabled")),
+            "caveman": router_cfg.get("cavemanLevel"),
+            "ponytail": router_cfg.get("ponytailLevel"),
             "combos": [{"name": c.get("name"), "models": len(c.get("models") or []), "kind": c.get("kind") or "combo"} for c in data.get("combos") or []],
             "links": [
                 {"label": "Abrir 9router", "url": "http://127.0.0.1:20128", "hint": "painel local"},
@@ -1175,6 +1465,16 @@ def prometheus_metrics() -> str:
     _metric(lines, "rune_tokens_today", "gauge", "Tokens consumed today.", [(None, int(today.get("tokens") or 0))])
     _metric(lines, "rune_requests_today", "gauge", "Requests made today.", [(None, int(today.get("requests") or 0))])
     _metric(lines, "rune_cost_today_usd", "gauge", "Estimated cost today in USD (9router base).", [(None, round(float(today.get("cost") or 0), 6))])
+    month = snap.get("month") or {}
+    if month:
+        _metric(lines, "rune_month_cost_usd", "gauge", "Estimated cost in the current month in USD (9router base).",
+                [(None, round(float(month.get("cost") or 0), 6))])
+        _metric(lines, "rune_month_projected_usd", "gauge", "Projected cost for the current month in USD.",
+                [(None, round(float(month.get("projected") or 0), 6))])
+    budget = (snap.get("settings") or {}).get("budgets") or {}
+    if budget.get("global"):
+        _metric(lines, "rune_budget_global_usd", "gauge", "Configured monthly budget in USD.",
+                [(None, round(float(budget["global"]), 2))])
     _metric(lines, "rune_cache_hit_ratio", "gauge", "Share of input tokens served from cache (0-1).", [(None, round(float(totals.get("cacheHit") or 0) / 100, 4))])
     _metric(lines, "rune_errors_open", "gauge", "Grouped error diagnostics in the window.", [(None, len(snap.get("errors") or []))])
     for key in ("router_age", "collector_age", "qoder_age"):
@@ -1415,6 +1715,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, fleet)
             except Exception as exc:  # noqa: BLE001
                 self._json(500, {"online": False, "error": "falha ao listar a frota", "detail": _clean(str(exc), 160)})
+        elif path == "/api/settings":
+            self._json(200, {"ok": True, **public_settings()})
         elif path == "/api/security":
             try:
                 self._json(200, security_audit())
@@ -1489,6 +1791,41 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 self._json(500, {"ok": False, "model": model, "connection": connection,
                                  "error": _clean(f"{type(exc).__name__}: {exc}", 160)})
+        elif path == "/api/settings":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length > 16384:
+                self._json(413, {"ok": False, "error": "payload grande demais"})
+                return
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                self._json(400, {"ok": False, "error": "json inválido"})
+                return
+            if not isinstance(payload, dict):
+                self._json(400, {"ok": False, "error": "json inválido"})
+                return
+            current = load_settings()
+            budgets = payload.get("budgets")
+            if isinstance(budgets, dict):
+                for key in ("global", "providers", "threshold"):
+                    if key in budgets:
+                        current["budgets"][key] = budgets[key]
+            alerts = payload.get("alerts")
+            if isinstance(alerts, dict):
+                for key in ("macos", "webhook", "cooldown_min"):
+                    if key in alerts:
+                        current["alerts"][key] = alerts[key]
+                if alerts.get("webhook_clear"):
+                    current["alerts"]["webhook"] = ""
+            try:
+                save_settings(current)
+            except OSError as exc:
+                self._json(500, {"ok": False, "error": "não foi possível salvar", "detail": _clean(str(exc), 160)})
+                return
+            self._json(200, {"ok": True, **public_settings()})
         else:
             self._json(404, {"error": "rota inexistente"})
 
@@ -1504,6 +1841,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.daemon_threads = True
+    start_alert_watcher()
     print(f"Rune Live em http://{HOST}:{PORT}", flush=True)
     try:
         server.serve_forever()

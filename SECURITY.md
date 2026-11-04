@@ -14,7 +14,17 @@ O Rune foi desenhado para uma máquina pessoal com 9router local. O servidor esc
 - Arquivos de dados e configuração são gravados com permissão `0600`.
 - O servidor não altera permissões, não escreve no banco do 9router e não remove a exigência de API key do 9router.
 - Não usa refresh token do Claude.
-- `POST` exige que o `Origin` (quando presente) corresponda ao `Host` local: outra página aberta no navegador não consegue disparar `/api/refresh` nem `/api/probe` via `localhost`.
+- `POST` exige que o `Origin` (quando presente) corresponda ao `Host` local: outra página aberta no navegador não consegue disparar `/api/refresh`, `/api/probe` nem `/api/settings` via `localhost`.
+
+## Orçamentos, alertas e segredos
+
+- Orçamentos e preferências de alerta ficam em `.rune-data/settings.json` (diretório `0700`, arquivo `0600`), fora do `localStorage`.
+- O webhook é tratado como segredo: `GET`/`POST /api/settings` devolvem apenas `webhook_set` e `webhook_host`, nunca a URL completa, porque o token costuma viver nela.
+- Webhook só é aceito em `https://` ou em loopback (`http://127.0.0.1`, `localhost`, `::1`); `http://` para host externo é rejeitado na normalização.
+- O vigia roda no servidor a cada `RUNE_ALERT_INTERVAL` segundos (padrão 300). Estado de deduplicação e espera entre avisos fica em `.rune-data/notify.json` (`0600`).
+- A notificação do macOS é disparada por `osascript` com título e corpo passados como `argv`, nunca interpolados em AppleScript — um nome de provedor ou valor de custo não vira comando.
+- O corpo enviado ao webhook é JSON com tipo, nível, provedor, percentual e valores; não inclui prompts, respostas, chaves nem caminhos pessoais.
+- Se o webhook falhar, o erro é descartado e o estado do alerta é gravado do mesmo jeito: a próxima tentativa fica para depois da espera configurada, sem enxurrada de requisições.
 
 ## Sonda de orquestração
 

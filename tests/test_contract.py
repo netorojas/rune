@@ -169,7 +169,7 @@ class SnapshotContractTests(unittest.TestCase):
     def test_snapshot_shape_and_totals(self):
         with tempfile.TemporaryDirectory() as raw:
             snap = self._snapshot(Path(raw))
-        for key in ("meta", "series", "totals", "today", "providers", "models", "slo", "recent",
+        for key in ("meta", "series", "month", "settings", "totals", "today", "providers", "models", "slo", "recent",
                     "errors", "alerts", "connections", "fleet", "keys", "quota", "sunStates",
                     "router", "projects", "suggestions", "inventory", "qoder", "insights"):
             self.assertIn(key, snap)
@@ -341,6 +341,147 @@ class FleetPersistenceTests(unittest.TestCase):
         (self.dir / "fleet.json").write_text("{not json", encoding="utf-8")
         with mock.patch.object(server, "FLEET_FILE", self.dir / "fleet.json"):
             self.assertEqual(server._load_fleet_state(), {})
+
+
+class SettingsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name) / ".rune-data"
+        patches = [
+            mock.patch.object(server, "RUNE_DATA", self.dir),
+            mock.patch.object(server, "SETTINGS_FILE", self.dir / "settings.json"),
+            mock.patch.object(server, "NOTIFY_FILE", self.dir / "notify.json"),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_normalizes_hostile_input(self):
+        clean = server.normalize_settings({
+            "budgets": {
+                "global": -5,
+                "threshold": 1234,
+                "providers": {"Claude": 12.5, "bad key": 9, "codex": -1, "gemini": "abc"},
+            },
+            "alerts": {"macos": 0, "cooldown_min": 99999, "webhook": "http://evil.example/hook"},
+        })
+        self.assertIsNone(clean["budgets"]["global"])
+        self.assertEqual(clean["budgets"]["threshold"], 80)
+        self.assertEqual(clean["budgets"]["providers"], {"claude": 12.5})
+        self.assertFalse(clean["alerts"]["macos"])
+        self.assertEqual(clean["alerts"]["cooldown_min"], 1440)
+        self.assertEqual(clean["alerts"]["webhook"], "")
+
+    def test_accepts_https_and_loopback_webhooks(self):
+        for url in ("https://hooks.example.com/T0KEN", "http://127.0.0.1:9000/hook", "http://localhost/hook"):
+            self.assertEqual(server._webhook_url(url), url)
+        for url in ("http://example.com/hook", "ftp://example.com", "javascript:alert(1)", "https://"):
+            self.assertEqual(server._webhook_url(url), "")
+
+    def test_round_trip_is_private_and_masks_the_webhook(self):
+        saved = server.save_settings({
+            "budgets": {"global": 50, "providers": {"codex": 20}, "threshold": 70},
+            "alerts": {"macos": True, "webhook": "https://hooks.example.com/secret-token", "cooldown_min": 180},
+        })
+        self.assertEqual(saved["budgets"]["global"], 50.0)
+        loaded = server.load_settings()
+        self.assertEqual(loaded["budgets"]["providers"], {"codex": 20.0})
+        self.assertEqual(os.stat(self.dir).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(self.dir / "settings.json").st_mode & 0o777, 0o600)
+
+        view = server.public_settings()
+        self.assertTrue(view["alerts"]["webhook_set"])
+        self.assertEqual(view["alerts"]["webhook_host"], "hooks.example.com")
+        self.assertNotIn("secret-token", json.dumps(view))
+
+
+class BudgetAlertTests(unittest.TestCase):
+    SETTINGS = {
+        "budgets": {"global": 10.0, "providers": {"codex": 4.0, "claude": 5.0}, "threshold": 80},
+        "alerts": {"macos": True, "webhook": "", "cooldown_min": 360},
+    }
+    MONTH = {"month": "2026-11", "cost": 9.0, "projected": 30.0, "byProvider": {"codex": 4.5, "claude": 1.0}}
+
+    def test_flags_global_and_provider_over_threshold(self):
+        rows = server.budget_alerts(self.MONTH, self.SETTINGS)
+        self.assertEqual([r["budget"] for r in rows], ["global", "codex"])
+        self.assertEqual(rows[0]["level"], "warn")
+        self.assertEqual(rows[1]["level"], "over")
+        self.assertEqual(rows[0]["tone"], "warn")
+        self.assertEqual(rows[1]["pct"], 112.5)
+        self.assertEqual(rows[0]["key"], "budget:global")
+
+    def test_quiet_below_threshold_or_without_limits(self):
+        month = {"month": "2026-11", "cost": 1.0, "projected": 3.0, "byProvider": {"codex": 0.5}}
+        self.assertEqual(server.budget_alerts(month, self.SETTINGS), [])
+        self.assertEqual(server.budget_alerts(month, server.normalize_settings({})), [])
+
+    def test_due_alerts_respects_level_change_and_cooldown(self):
+        now = server.datetime(2026, 11, 3, 12, 0, tzinfo=server.timezone.utc)
+        alerts = [{"key": "budget:global", "level": "warn", "budget": "global"}]
+        fresh = server.due_alerts(alerts, {}, now, 360)
+        self.assertEqual(len(fresh), 1)
+
+        recent = {"budget:global": {"level": "warn", "at": (now - server.timedelta(minutes=5)).isoformat()}}
+        self.assertEqual(server.due_alerts(alerts, recent, now, 360), [])
+
+        naive = {"budget:global": {"level": "warn", "at": now.astimezone().replace(tzinfo=None).isoformat()}}
+        self.assertEqual(server.due_alerts(alerts, naive, now, 360), [])
+
+        old = {"budget:global": {"level": "warn", "at": (now - server.timedelta(minutes=400)).isoformat()}}
+        self.assertEqual(len(server.due_alerts(alerts, old, now, 360)), 1)
+
+        escalated = [{"key": "budget:global", "level": "over", "budget": "global"}]
+        self.assertEqual(len(server.due_alerts(escalated, recent, now, 360)), 1)
+
+    def test_cycle_notifies_once_then_persists_the_state(self):
+        now = server.datetime(2026, 11, 3, 12, 0, tzinfo=server.timezone.utc)
+        written = {}
+
+        def fake_write(path, payload):
+            written[path.name] = payload
+
+        with mock.patch.object(server, "load_settings", return_value=self.SETTINGS), \
+                mock.patch.object(server, "load_router_usage", return_value={"month": self.MONTH}), \
+                mock.patch.object(server, "_notify_state", return_value={}), \
+                mock.patch.object(server, "_macos_notification") as mac, \
+                mock.patch.object(server, "_write_private", side_effect=fake_write):
+            first = server.alert_cycle(now=now)
+            self.assertEqual(first["sent"], 2)
+            self.assertEqual(mac.call_count, 2)
+            self.assertIn("notify.json", written)
+            self.assertEqual(written["notify.json"]["alerts"]["budget:codex"]["level"], "over")
+
+            with mock.patch.object(server, "_notify_state", return_value=written["notify.json"]["alerts"]):
+                second = server.alert_cycle(now=now)
+        self.assertEqual(second["sent"], 0)
+
+    def test_snapshot_stamps_budget_alerts_for_the_client(self):
+        stub = {**_router_stub(), "month": {
+            "month": "2026-11", "cost": 9.0, "projected": 30.0,
+            "byProvider": {"claude": 9.0}, "elapsed": 3, "days_in_month": 30, "active_days": 3,
+        }}
+        settings = {
+            "budgets": {"global": 10.0, "providers": {}, "threshold": 80},
+            "alerts": {"macos": True, "webhook": "", "cooldown_min": 360},
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            with mock.patch.object(server, "_read_json", return_value=DATA_FIXTURE), \
+                    mock.patch.object(server, "load_router_usage", return_value=stub), \
+                    mock.patch.object(server, "load_qoder", return_value={"sessions": []}), \
+                    mock.patch.object(server, "router_catalog", return_value=CATALOG), \
+                    mock.patch.object(server, "fleet_routes", return_value=ROUTES), \
+                    mock.patch.object(server, "load_settings", return_value=settings), \
+                    mock.patch.object(server, "ROUTER_DB", tmp / "router.sqlite"), \
+                    mock.patch.object(server, "DATA_FILE", tmp / "data.json"), \
+                    mock.patch.object(server, "QODER_DB", tmp / "qoder.sqlite"):
+                snap = server.build_snapshot()
+        self.assertEqual(snap["alerts"][0]["kind"], "budget")
+        self.assertEqual(snap["alerts"][0]["level"], "warn")
+        self.assertEqual(snap["month"]["cost"], 9.0)
+        self.assertEqual(snap["settings"]["budgets"]["global"], 10.0)
 
 
 class InstallerTests(unittest.TestCase):

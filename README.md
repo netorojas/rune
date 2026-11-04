@@ -45,8 +45,9 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 
 - **Frota viva** lida do 9router em `/v1/models`: cada IA plugada, quantos modelos ela tem, contexto máximo e capacidades (visão, ferramentas, raciocínio, gratuito).
 - **Sonda de orquestração** ("Testar rotas"): prova com uma chamada de 1 token se a rota responde de verdade, sem depender do que o catálogo promete. O resultado fica em `.rune-data/fleet.json` (`0600`) e sobrevive ao reload; o número "X de 11 rotas respondem" aparece no dock do Atlas.
-- **Orçamentos** em BRL, USD ou EUR, com limite global, limite por provedor e marcador de alerta (60–90%). O custo-base é USD, como o 9router grava; a conversão acontece só na exibição e no formulário.
-- **Motor de alertas** para orçamento estourado, cota baixa, cache abaixo da meta, erros e coleta parada.
+- **Orçamentos** em BRL, USD ou EUR, com limite global, limite por provedor e marcador de alerta (50–90%). O custo-base é USD, como o 9router grava; a conversão acontece só na exibição e no formulário. O orçamento é salvo no servidor em `.rune-data/settings.json` (`0600`), então vale para qualquer navegador e para os alertas fora da aba.
+- **Gasto do mês** calculado no servidor a partir do `usageHistory` do 9router (não dos últimos 14 dias): custo do mês, projeção por dia corrido, cache hit e quebra por provedor.
+- **Motor de alertas** para orçamento estourado, cota baixa, cache abaixo da meta, erros e coleta parada — incluindo notificação nativa do macOS e webhook (só HTTPS ou loopback), com deduplicação e espera configurável entre avisos.
 - **SLO por provedor** na janela de 7 dias: p50, p95, tempo até o primeiro token e taxa de erro.
 - **Exportação CSV** com série diária e resumo por provedor, em `cost_usd`.
 - **Endpoint Prometheus** em `/metrics` (`rune_cost_today_usd`, `rune_provider_cost_usd`) com cache de 20 s para não remontar o snapshot a cada scrape.
@@ -110,15 +111,19 @@ O CI em `.github/workflows/ci.yml` roda os mesmos comandos a cada push e pull re
 | `AI_USAGE_HOME` | `~/.ai-usage` | Onde ficam `data.json`, `config.json` e o coletor. |
 | `RUNE_NO_OPEN` | vazio | Defina `1` para o `run.sh` não abrir o navegador. |
 | `RUNE_OPERATOR` | nome do sistema | Como o Rune chama você (também editável no Perfil). |
+| `RUNE_ALERTS` | ligado | Defina `0` para desligar o vigia de alertas fora da aba. |
+| `RUNE_ALERT_INTERVAL` | `300` | Segundos entre ciclos do vigia (mínimo 30). |
 | `RUNE_METRICS_TTL` | `20` | Segundos de cache do `/metrics` (o snapshot é caro; Prometheus bate a cada 15 s). |
 
 ## API local
 
 | Rota | Método | Conteúdo |
 |---|---|---|
-| `/api/snapshot` | GET | Snapshot completo usado pelo painel, incluindo `fleet.routes` com o último resultado de cada rota. |
+| `/api/snapshot` | GET | Snapshot completo usado pelo painel, incluindo `fleet.routes`, o gasto do mês (`month`) e os orçamentos/alertas (`settings`, `alerts`). |
 | `/api/fleet` | GET | Catálogo vivo do 9router (`/v1/models`): modelos, donos, contexto e capacidades. |
 | `/api/probe` | POST | Sonda de orquestração. Corpo `{"connection":"codex"}` testa a rota, `{"model":"cx/gpt-6.1-sol"}` testa um modelo e `{"all":true}` testa todas. Cada teste é uma chamada de 1 token. |
+| `/api/settings` | GET | Orçamentos e preferências de alerta. O webhook volta mascarado (`webhook_set`, `webhook_host`), nunca completo. |
+| `/api/settings` | POST | Salva orçamentos e alertas em `.rune-data/settings.json`. Para remover o webhook, envie `{"alerts":{"webhook_clear":true}}`. |
 | `/api/security` | GET | Auditoria local, com achados e correções. |
 | `/metrics` | GET | Métricas Prometheus. |
 | `/api/health` | GET | Processo e porta. |
@@ -140,8 +145,10 @@ O contrato do Rune é curto e verificável no código:
 - **Não** usam refresh token do Claude.
 - Prompts, respostas e trechos de código **não** são persistidos nem enviados.
 - A sonda de orquestração envia somente `ping` com `max_tokens: 1` pelo 9router; nenhum conteúdo seu entra na sondagem. O painel guarda apenas modelo, latência, código HTTP e horário em `.rune-data/fleet.json` (`0600`).
+- Orçamentos vivem em `.rune-data/settings.json` (`0600`); o webhook é tratado como segredo, volta mascarado na API e só é aceito em HTTPS ou loopback.
+- As notificações carregam apenas rótulo e valores (provedor, percentual, custo); nenhum prompt, resposta ou chave é enviado ao macOS ou ao webhook.
 
-O único tráfego externo possível é o que o próprio 9router já faz para falar com os provedores.
+O único tráfego externo possível é o que o próprio 9router já faz para falar com os provedores, mais o webhook que você configurar.
 
 ## Arquitetura
 
@@ -153,12 +160,14 @@ Qoder Desktop (main.sqlite)┘                              │
                                         server.py (127.0.0.1:8770)
                                           ├── /api/snapshot
                                           ├── /api/fleet · /api/probe
+                                          ├── /api/settings
                                           ├── /api/security
                                           ├── /metrics
+                                          ├── vigia de alertas (macOS + webhook)
                                           └── index.html + app.js + i18n.js + styles.css
 ```
 
-- `server.py`: HTTP local, leitura somente-leitura dos SQLite, agregação SLO, métricas e auditoria.
+- `server.py`: HTTP local, leitura somente-leitura dos SQLite, agregação SLO, métricas, orçamentos/alertas e auditoria.
 - `collector/collect.py`: coleta metadados de uso, cota, inventário e projetos.
 - `app.js`: runtime do painel, dez alas, orçamento, alertas, missões/XP, i18n e câmbio.
 - `i18n.js`: dicionários PT/EN/ES.
