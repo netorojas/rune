@@ -538,6 +538,27 @@ class AccountingCsvTests(unittest.TestCase):
         self.assertIn("date,provider,model", body)
 
 
+class DynamicRouteTests(unittest.TestCase):
+    def test_unknown_owner_becomes_a_probeable_route(self):
+        catalog = {"online": True, "total": 1, "owners": [{
+            "key": "novo", "label": "novo", "connection": "novo", "models": 1, "sample": ["novo/model"],
+        }]}
+        with mock.patch.object(server, "router_catalog", return_value=catalog), \
+                mock.patch.dict(server._catalog_raw, {"by_owner": {"novo": ["novo/model"]}}, clear=False), \
+                mock.patch.object(server, "probe_route", return_value={
+                    "ok": True, "model": "novo/model", "ms": 12, "code": 200,
+                }), \
+                mock.patch.object(server, "_record_probe"):
+            server._conn_cache.pop("novo", None)
+            server._route_cache.pop("novo", None)
+            result = server.probe_connection("novo")
+            unknown = server.probe_connection("fantasma")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["owner"], "novo")
+        self.assertEqual(result["model"], "novo/model")
+        self.assertEqual(unknown["error"], "rota desconhecida")
+
+
 class InstallerTests(unittest.TestCase):
     def _run(self, *args, **env_overrides):
         env = {

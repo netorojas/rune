@@ -1097,9 +1097,11 @@ def router_catalog(force: bool = False) -> dict:
             oid = str(m.get("owned_by") or "?")
             caps = m.get("capabilities") or {}
             by_owner.setdefault(oid, []).append(mid)
+            meta = OWNER_META.get(oid)
             row = owners.setdefault(oid, {
-                "key": oid, "label": OWNER_META.get(oid, (oid, None))[0],
-                "connection": OWNER_META.get(oid, (oid, None))[1],
+                "key": oid, "label": meta[0] if meta else oid,
+                # Conexão nova no 9router vira rota sondável mesmo sem entrada fixa.
+                "connection": meta[1] if meta else (oid if oid != "?" else None),
                 "models": 0, "context": 0, "vision": False, "tools": False,
                 "reasoning": False, "free": oid in FREE_OWNERS, "sample": [],
             })
@@ -1167,9 +1169,19 @@ def _mark_dead(model: str, code) -> None:
         _dead_models[model] = time.time() + ttl
 
 
+def _owner_for_connection(connection: str) -> str:
+    """Resolve rotas fixas e também conexões que o 9router ganhou depois do Rune."""
+    known = next((o for o, (_, c) in OWNER_META.items() if c == connection), "")
+    if known:
+        return known
+    if not _catalog_raw.get("by_owner"):
+        router_catalog()
+    return connection if connection in (_catalog_raw.get("by_owner") or {}) else ""
+
+
 def probe_connection(connection: str, force: bool = False) -> dict:
     """Testa uma rota tentando até 4 modelos: o catálogo lista modelos mortos."""
-    owner = next((o for o, (_, c) in OWNER_META.items() if c == connection), "")
+    owner = _owner_for_connection(connection)
     if not owner:
         return {"ok": False, "connection": connection, "error": "rota desconhecida", "attempts": []}
     cached_conn = _conn_cache.get(connection)
@@ -1215,9 +1227,12 @@ def probe_connection(connection: str, force: bool = False) -> dict:
 
 def probe_all() -> list[dict]:
     """Sonda todas as rotas com no máximo 3 em paralelo, para poupar a máquina."""
-    connections = [c for _, c in OWNER_META.values() if c]
+    connections = {c for _, c in OWNER_META.values() if c}
+    for owner in router_catalog().get("owners", []):
+        if owner.get("connection"):
+            connections.add(owner["connection"])
     with ThreadPoolExecutor(max_workers=3) as pool:
-        return list(pool.map(probe_connection, connections))
+        return list(pool.map(probe_connection, sorted(connections)))
 
 
 def _router_key() -> str:
