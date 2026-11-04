@@ -4260,6 +4260,8 @@ body { background: var(--paper); }
   box-shadow: none;
 }
 .btn.primary:hover { background: var(--signal-deep); border-color: var(--signal-deep); transform: none; }
+.drawer-panel .btn.primary { background: #12201C; border-color: #12201C; color: #F7F3E7; }
+.drawer-panel .btn.primary:hover { background: #1D332B; border-color: #1D332B; }
 .btn.ghost {
   background: transparent;
   border-color: var(--ink);
@@ -6476,6 +6478,12 @@ html[data-light="dusk"] body { background: #050B0E; }
   color: #fff;
 }
 .app[data-light="dusk"] .btn.primary:hover { background: linear-gradient(135deg, #FF7F62, #D8310F); }
+.app[data-light="dusk"] .drawer-panel .btn.primary {
+  background: linear-gradient(135deg, #C8F169, #84E0B4);
+  border-color: transparent;
+  color: #06120B;
+}
+.app[data-light="dusk"] .drawer-panel .btn.primary:hover { background: linear-gradient(135deg, #D6F58F, #97EAC3); }
 
 /* overlays · manual · paleta · tour */
 .app[data-light="dusk"] .manual-scrim,

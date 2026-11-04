@@ -2893,7 +2893,10 @@
   act("settings", () => openSettingsDrawer());
   act("settings-close", () => closeDrawer());
   act("alerts-save", () => saveAlerts());
-  act("budget", () => openBudgetDrawer());
+  act("budget", () => {
+    state.budgetFromPark = state.drawerKey === "__park";
+    openBudgetDrawer();
+  });
   act("budget-save", () => saveBudgets());
   act("budget-threshold", (el) => {
     state.budgets = normalizeBudgets({ ...state.budgets, threshold: Number(el.dataset.v) });
@@ -3718,6 +3721,7 @@
       }).join("");
     const thresholdBtns = [50, 60, 70, 80, 90].map((v) => `<button class="bud-th${v === b.threshold ? " on" : ""}" data-act="budget-threshold" data-v="${v}">${v}%</button>`).join("");
     $("#drawerBody").innerHTML = `
+      ${state.budgetFromPark ? `<button class="drw-back" data-act="park">← ${esc(tr("park.title"))}</button>` : ""}
       <span class="drw-eyebrow">${esc(tr("budget.eyebrow"))}</span>
       <div class="drw-head">
         <span class="drw-mark" style="--pc:#f4bd4a">◎</span>
@@ -3839,6 +3843,10 @@
     const headroom = router.headroom || {};
     const keys = (S.keys || []).length;
     const today = S.today?.providers || {};
+    const month = monthUsage();
+    const budgets = state.budgets;
+    const spent = month?.cost || 0;
+    const budgetState = budgets.global ? budgetStatus(spent, budgets.global) : null;
 
     const aiRow = (r) => {
       const status = r.conn ? portStatusFor(r.key) : { tone: "none", label: tr("park.noConn") };
@@ -3895,6 +3903,21 @@
           </span>
         </div>`).join("")}</div>
       </div>
+      ${(() => {
+        const q = state.snap?.quota || {};
+        const weekFree = q.codex?.available ? q.codex.week_free : null;
+        return `<div class="drw-section"><h3>${esc(tr("park.resTitle"))}</h3>
+          <div class="drw-note" style="margin-top:0">${esc(tr("park.resSub"))}</div>
+          <div class="drw-line"><span>${esc(tr("budget.global"))}</span><b>${budgets.global ? money(budgets.global) : esc(tr("budget.noLimit"))}</b></div>
+          <div class="drw-line"><span>${esc(tr("budget.month"))}</span><b>${money(spent)}${budgetState ? ` · ${pct(budgetState.pct, 0)}` : ""}</b></div>
+          <div class="drw-line"><span>${esc(tr("park.resForecast"))}</span><b>${money(month?.projected || 0)}</b></div>
+          ${weekFree != null ? `<div class="drw-line"><span>${esc(tr("port.dockFree"))} · ${esc(tr("port.dockWeek"))}</span><b>${pct(weekFree, 0)}</b></div>` : ""}
+          <div class="drw-actions" style="margin-top:8px">
+            <button class="btn primary" data-act="budget">${esc(tr(budgets.global ? "budget.edit" : "budget.configure"))}</button>
+            <button class="btn ghost" data-act="wing" data-key="fluxo">${esc(tr("nav.fluxo"))}</button>
+          </div>
+        </div>`;
+      })()}
       ${sugg.length ? `<div class="drw-section"><h3>${esc(tr("park.suggTitle"))}</h3>
         <div class="drw-note" style="margin-top:0">${esc(tr("park.suggSub"))}</div>
         <div class="park-sugg">${sugg.map((s, i) => parkSuggRow(s, i)).join("")}</div>
