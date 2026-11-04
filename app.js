@@ -2866,6 +2866,7 @@
   act("export-csv", () => exportCsv());
   act("export-month", () => exportMonthCsv());
   act("year-month", (el) => exportMonthCsv(el.dataset.month));
+  act("share-card", () => shareCard());
   act("open-url", (el) => {
     const url = String(el.dataset.url || "");
     if (!/^https?:\/\//i.test(url)) { toast("Link indisponível neste snapshot", "warn"); return; }
@@ -3400,6 +3401,120 @@
     a.click();
     a.remove();
     toast(tr("fluxo.exportMonthSaved", { month }));
+  }
+
+  async function shareCard() {
+    const S = state.snap;
+    if (!S) return;
+    const t = S.totals;
+    const period = (S.series || []).length || 14;
+    const W = 1200, H = 630;
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    try { await document.fonts.ready; } catch { /* fontes locais bastam */ }
+    const ink = "#0F1A15", muted = "#5E6A62", paper = "#F4F0E5", signal = "#FF4B2B";
+    const rule = "rgba(15,26,21,.14)";
+    const rrect = (x0, y0, w, h, r) => {
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x0, y0, w, h, r);
+      else ctx.rect(x0, y0, w, h);
+    };
+    ctx.fillStyle = paper;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = signal;
+    ctx.fillRect(0, 0, W, 12);
+
+    ctx.fillStyle = ink;
+    ctx.font = "700 42px 'Clash Display', Satoshi, sans-serif";
+    ctx.fillText("RUNE", 64, 96);
+    ctx.fillStyle = muted;
+    ctx.font = "500 15px 'JetBrains Mono', monospace";
+    ctx.fillText("LOCAL-FIRST AI CONTROL · 127.0.0.1", 64, 124);
+    ctx.textAlign = "right";
+    ctx.fillText(new Date().toLocaleDateString(locale()), W - 64, 96);
+    ctx.textAlign = "left";
+    ctx.strokeStyle = rule;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(64, 156);
+    ctx.lineTo(W - 64, 156);
+    ctx.stroke();
+
+    ctx.fillStyle = muted;
+    ctx.font = "500 16px 'JetBrains Mono', monospace";
+    ctx.fillText(tr("fluxo.shareCardPeriod", { n: period }).toUpperCase(), 64, 208);
+
+    ctx.fillStyle = ink;
+    ctx.font = "700 148px 'Clash Display', Satoshi, sans-serif";
+    ctx.fillText(compact(t.tokens), 60, 348);
+    ctx.fillStyle = muted;
+    ctx.font = "500 16px 'JetBrains Mono', monospace";
+    ctx.fillText("TOKENS", 66, 386);
+
+    ctx.fillStyle = ink;
+    ctx.font = "600 52px 'Clash Display', Satoshi, sans-serif";
+    ctx.fillText(money(t.cost), 64, 470);
+    ctx.fillStyle = muted;
+    ctx.font = "500 16px 'JetBrains Mono', monospace";
+    ctx.fillText(`${int(t.requests)} ${tr("fluxo.shareCardCalls")}`, 64, 502);
+
+    const chip = `cache ${pct(t.cacheHit)}`;
+    ctx.font = "600 18px 'JetBrains Mono', monospace";
+    const chipW = ctx.measureText(chip).width + 36;
+    ctx.fillStyle = "rgba(47,158,107,.14)";
+    rrect(64, 528, chipW, 40, 10);
+    ctx.fill();
+    ctx.fillStyle = "#1D6F52";
+    ctx.fillText(chip, 82, 556);
+
+    const provs = (S.providers || []).slice(0, 4);
+    const px = 680;
+    const pw = W - 64 - px;
+    ctx.fillStyle = muted;
+    ctx.font = "500 14px 'JetBrains Mono', monospace";
+    ctx.fillText(tr("fluxo.shareCardWho").toUpperCase(), px, 208);
+    provs.forEach((p, i) => {
+      const y = 248 + i * 80;
+      ctx.fillStyle = ink;
+      ctx.font = "600 22px Satoshi, sans-serif";
+      ctx.fillText(provName(p.provider), px, y);
+      ctx.textAlign = "right";
+      ctx.fillStyle = muted;
+      ctx.font = "500 18px 'JetBrains Mono', monospace";
+      ctx.fillText(pct(p.share, 0), W - 64, y);
+      ctx.textAlign = "left";
+      ctx.fillStyle = "rgba(15,26,21,.08)";
+      rrect(px, y + 16, pw, 10, 5);
+      ctx.fill();
+      ctx.fillStyle = provColor(p.provider);
+      rrect(px, y + 16, Math.max(6, (pw * clamp(p.share)) / 100), 10, 5);
+      ctx.fill();
+    });
+
+    ctx.strokeStyle = rule;
+    ctx.beginPath();
+    ctx.moveTo(64, 576);
+    ctx.lineTo(W - 64, 576);
+    ctx.stroke();
+    ctx.fillStyle = muted;
+    ctx.font = "500 15px Satoshi, sans-serif";
+    ctx.fillText(tr("fluxo.shareCardNote"), 64, 606);
+
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `rune-resumo-${new Date().toISOString().slice(0, 10)}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast(tr("fluxo.shareSaved"));
+    }, "image/png");
   }
 
   async function loadSecurity() {
@@ -4345,7 +4460,7 @@
   const MANUAL_ORDER = ["codex", "claude", "antigravity", "gemini", "gemini-cli", "openrouter", "nvidia", "ollama", "cloudflare-ai", "opencode"];
 
   const CHANGELOG = [
-    { date: "03/11/2026", title: "v0.1 · Atlas vivo", text: "Dez alas, cota do Codex e do Claude, gráfico hora a hora, mapa de calor e radar de risco. Histórico de 12 meses, orçamentos no servidor, alertas fora da aba e exportação contábil em CSV.", now: true },
+    { date: "03/11/2026", title: "v0.1 · Atlas vivo", text: "Dez alas, cota do Codex e do Claude, gráfico hora a hora, mapa de calor e radar de risco. Histórico de 12 meses, orçamentos no servidor, alertas fora da aba, exportação contábil em CSV e cartão compartilhável em PNG.", now: true },
     { date: "02/11/2026", title: "Cotas e coletores", text: "Leitura somente-local do 9router, Qoder Desktop e coletor. Sanitização de chaves, redaction de contas e servidor em 127.0.0.1.", now: false },
     { date: "01/11/2026", title: "Frota e projetos", text: "Inventário de conexões, modelos, combos, projetos e sessões. Primeiros diagnósticos de erro com prompt de correção.", now: false },
     { date: "31/10/2026", title: "Fundação", text: "Primeiro snapshot derivado: tokens, custo, cache e distribuição por provedor. Nenhum prompt persistido.", now: false },
@@ -4354,7 +4469,7 @@
   const ROADMAP = [
     { key: "core", title: "Núcleo local-first", sub: "9router + Qoder + coletor, sem nuvem", status: "feito", base: 0 },
     { key: "manual", title: "Manual da Frota", sub: "decisor de IA com docs oficiais", status: "feito", base: 0 },
-    { key: "share", title: "Cartão compartilhável", sub: "imagem do resumo semanal", status: "próximo", base: 0 },
+    { key: "share", title: "Cartão compartilhável", sub: "resumo em PNG com marca e números", status: "feito", base: 0 },
     { key: "auth", title: "Login opcional GitHub", sub: "só para comunidade, nunca para os dados", status: "planejado", base: 0 },
     { key: "templates", title: "Templates da Guilda", sub: "combos, políticas e manuais da comunidade", status: "planejado", base: 0 },
     { key: "sdk", title: "SDK de coletores", sub: "plugue qualquer IDE ou roteador", status: "planejado", base: 0 },
@@ -4382,6 +4497,7 @@
           <p>Hoje foram <b>${compact(today.tokens)} tokens</b> e <b>${money(today.cost)}</b>. A média dos dias ativos é ${compact(t.avgTokens)} tokens e ${money(t.avgCost)} por dia. O gráfico projeta os dois ritmos para você decidir antes do reset.</p>
         </div>
         <div class="side">
+          <button class="btn ghost" data-act="share-card">${esc(tr("fluxo.share"))}</button>
           <button class="btn primary" data-act="sim-days" data-days="${days === 7 ? 30 : 7}">${days === 7 ? "Projetar 30 dias" : "Voltar a 7 dias"}</button>
         </div>
       </div>
