@@ -30,7 +30,7 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 
 | Área | O que você vê e faz |
 |---|---|
-| **Atlas** | Painel de comando: faixa de KPIs do dia, porto 3D navegável e inspetor com limites reais por IA (Codex, Claude, Google) e projetos ativos. Clique numa construção para ver o papel, a fatia de uso e a próxima ação. |
+| **Atlas** | Painel de comando: faixa de KPIs do dia, porto 3D navegável e inspetor com limites reais por IA (Codex, Claude, Google) e projetos ativos. Clique numa construção para ver o papel, a fatia de uso e a próxima ação. O botão **Configurar parque** abre a ficha de cada IA, adiciona agentes pelo 9router, lista ferramentas e mostra teto, gasto e projeção do mês no mesmo lugar. |
 | **Fluxo** | Consumo por dia/hora, projeção do mês, orçamento global e por provedor. |
 | **Sessões** | Chamadas recentes, projetos, latência, status e diagnóstico por provedor. |
 | **Oficina** | Inventário de CLIs/apps, skills, artefatos e sinais de desperdício. |
@@ -198,13 +198,14 @@ Leia [CONTRIBUTING.md](CONTRIBUTING.md). Issues e Discussions são o canal da co
 
 AI costs are split across providers, models, subscriptions and keys. Rune turns local metadata from 9router, Qoder Desktop and the `~/.ai-usage` collector into an explorable 3D port with ten functional wings.
 
-The Atlas works as a command deck: a live KPI strip on top, the navigable 3D port in the middle, and an inspector with real per-AI limits (Codex, Claude, Google) and active projects. The source (9router, the local router — not an AI), the AIs that answer and the tools where you work stay separated. Click any building to see its role, usage share and next action. A five-step "How to play" manual shows how to wire your AI tools into the panel with a live checklist.
+The Atlas works as a command deck: a live KPI strip on top, the navigable 3D port in the middle, and an inspector with real per-AI limits (Codex, Claude, Google) and active projects. The source (9router, the local router — not an AI), the AIs that answer and the tools where you work stay separated. Click any building to see its role, usage share and next action. **Configure park** opens the same map as a control surface: every AI with its connection status, the add-agent grid that deep-links into 9router, client tools with install steps, actionable suggestions, and the month's ceiling, spend and projection. A five-step "How to play" manual shows how to wire your AI tools into the panel with a live checklist.
 
 ### Features
 
 - Ten functional wings: overview, flow, sessions, workshop, local assistant, fleet manual, changelog, community, profile and help.
 - Live fleet read from 9router plus a 1-token orchestration probe per route ("X of 11 routes answering"), persisted locally so it survives a reload.
 - Navigable 3D Atlas plus a five-step interactive manual with live collection checks.
+- In-map park configuration: connection status per AI, add-agent deep links into 9router, client tools, actionable suggestions and monthly resources.
 - Global and per-provider budgets with forecast and threshold alerts.
 - 7-day SLOs: p50, p95, time to first token and error rate.
 - CSV export and a Prometheus `/metrics` endpoint.
