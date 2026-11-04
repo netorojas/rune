@@ -6,6 +6,7 @@ import json
 import os
 import plistlib
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -482,6 +483,59 @@ class BudgetAlertTests(unittest.TestCase):
         self.assertEqual(snap["alerts"][0]["level"], "warn")
         self.assertEqual(snap["month"]["cost"], 9.0)
         self.assertEqual(snap["settings"]["budgets"]["global"], 10.0)
+
+
+class AccountingCsvTests(unittest.TestCase):
+    def _router_db(self, directory: Path) -> Path:
+        path = directory / "router.sqlite"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE usageHistory (timestamp TEXT, provider TEXT, model TEXT, "
+            "promptTokens INTEGER, completionTokens INTEGER, cost REAL)"
+        )
+        conn.executemany("INSERT INTO usageHistory VALUES (?,?,?,?,?,?)", [
+            ("2026-11-02T10:00:00-03:00", "codex", "gpt-5", 100, 20, 0.25),
+            ("2026-11-02T11:00:00-03:00", "codex", "gpt-5", 50, 10, 0.15),
+            ("2026-11-03T09:00:00-03:00", "=cmd", "model,x", 10, 5, 0.1),
+            ("2026-10-15T09:00:00-03:00", "codex", "gpt-5", 999, 999, 9.99),
+        ])
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_month_rows_are_aggregated_in_usd(self):
+        with tempfile.TemporaryDirectory() as raw:
+            db = self._router_db(Path(raw))
+            with mock.patch.object(server, "ROUTER_DB", db):
+                rows = server.month_accounting("2026-11")
+                resolved, body = server.accounting_csv("2026-11")
+        self.assertEqual(resolved, "2026-11")
+        self.assertEqual(len(rows), 2)
+        agg = next(r for r in rows if r["provider"] == "codex")
+        self.assertEqual((agg["requests"], agg["input"], agg["output"], agg["tokens"]), (2, 150, 30, 180))
+        self.assertAlmostEqual(agg["cost"], 0.4)
+        self.assertNotIn("2026-10-15", body)
+        self.assertIn("currency,cost_usd", body)
+        self.assertIn("USD,0.400000", body)
+
+    def test_formula_like_cells_are_neutralized(self):
+        with tempfile.TemporaryDirectory() as raw:
+            db = self._router_db(Path(raw))
+            with mock.patch.object(server, "ROUTER_DB", db):
+                _, body = server.accounting_csv("2026-11")
+        self.assertIn("'=cmd", body)
+        self.assertIn('"model,x"', body)
+        self.assertEqual(server._csv_cell("@sum"), "'@sum")
+        self.assertEqual(server._csv_cell("-1"), "'-1")
+        self.assertEqual(server._csv_cell("codex"), "codex")
+
+    def test_invalid_month_falls_back_to_current_and_empty_db_still_has_header(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(server, "ROUTER_DB", Path(raw) / "missing.sqlite"):
+                resolved, body = server.accounting_csv("2026-13")
+        self.assertRegex(resolved, r"^\d{4}-(0[1-9]|1[0-2])$")
+        self.assertEqual(body.count("\n"), 1)
+        self.assertIn("date,provider,model", body)
 
 
 class InstallerTests(unittest.TestCase):

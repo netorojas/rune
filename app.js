@@ -2864,6 +2864,7 @@
   act("copy-error", (el) => copyErrorPrompt(Number(el.dataset.i)));
   act("export-json", () => exportJson());
   act("export-csv", () => exportCsv());
+  act("export-month", () => exportMonthCsv());
   act("open-url", (el) => {
     const url = String(el.dataset.url || "");
     if (!/^https?:\/\//i.test(url)) { toast("Link indisponível neste snapshot", "warn"); return; }
@@ -3348,6 +3349,7 @@
       <div class="w-health-foot">
         <span>${esc(tr("health.method", { window: esc(tr("health.window7d")) }))}</span>
         <span class="w-health-actions">
+          <button class="btn ghost" data-act="export-month">${esc(tr("fluxo.exportMonth"))}</button>
           <button class="btn ghost" data-act="export-csv">${esc(tr("fluxo.exportCsv"))}</button>
           <button class="btn ghost" data-act="open-url" data-url="${esc(`${location.origin}/metrics`)}">${esc(tr("health.metrics"))}</button>
         </span>
@@ -3386,6 +3388,17 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1500);
     toast(tr("fluxo.csvSaved"));
+  }
+
+  function exportMonthCsv() {
+    const month = state.snap?.month?.month || new Date().toISOString().slice(0, 7);
+    const a = document.createElement("a");
+    a.href = `/api/export.csv?month=${encodeURIComponent(month)}`;
+    a.download = `rune-${month}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast(tr("fluxo.exportMonthSaved", { month }));
   }
 
   async function loadSecurity() {

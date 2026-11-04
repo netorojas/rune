@@ -215,6 +215,8 @@
       "fluxo.simulate": "Simular outro horizonte",
       "fluxo.exportCsv": "Exportar CSV",
       "fluxo.csvSaved": "CSV exportado",
+      "fluxo.exportMonth": "Exportar mês (CSV)",
+      "fluxo.exportMonthSaved": "Fechamento de {month} exportado",
 
       "sessoes.search": "Buscar sessão, projeto ou modelo…",
       "sessoes.count": "{shown} de {total}",
@@ -816,6 +818,8 @@
       "fluxo.simulate": "Simulate another horizon",
       "fluxo.exportCsv": "Export CSV",
       "fluxo.csvSaved": "CSV exported",
+      "fluxo.exportMonth": "Export month (CSV)",
+      "fluxo.exportMonthSaved": "Month {month} exported",
 
       "sessoes.search": "Search session, project or model…",
       "sessoes.count": "{shown} of {total}",
@@ -1417,6 +1421,8 @@
       "fluxo.simulate": "Simular otro horizonte",
       "fluxo.exportCsv": "Exportar CSV",
       "fluxo.csvSaved": "CSV exportado",
+      "fluxo.exportMonth": "Exportar mes (CSV)",
+      "fluxo.exportMonthSaved": "Cierre de {month} exportado",
 
       "sessoes.search": "Buscar sesión, proyecto o modelo…",
       "sessoes.count": "{shown} de {total}",

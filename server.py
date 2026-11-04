@@ -8,6 +8,8 @@ prompts. Escuta exclusivamente em 127.0.0.1.
 from __future__ import annotations
 
 import calendar
+import csv
+import io
 import json
 import math
 import os
@@ -24,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 BASE = Path(__file__).resolve().parent
 ASSETS = BASE / "assets"
@@ -648,6 +650,70 @@ def load_router_usage(days: int = 14) -> dict:
     finally:
         conn.close()
     return out
+
+
+MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def resolve_month(month: str) -> str:
+    return month if MONTH_RE.fullmatch(month or "") else datetime.now().astimezone().strftime("%Y-%m")
+
+
+def month_accounting(month: str = "") -> list[dict]:
+    """Fechamento do mês por dia, provedor e modelo — o recorte que uma nota de reembolso pede."""
+    target = resolve_month(month)
+    rows: dict[tuple[str, str, str], dict] = {}
+    conn = _ro(ROUTER_DB)
+    if conn is None:
+        return []
+    try:
+        for row in conn.execute(
+            "SELECT timestamp, provider, model, promptTokens, completionTokens, cost FROM usageHistory"
+        ):
+            try:
+                ts = datetime.fromisoformat(str(row["timestamp"] or "").replace("Z", "+00:00")).astimezone()
+            except (TypeError, ValueError):
+                continue
+            if ts.strftime("%Y-%m") != target:
+                continue
+            provider = str(row["provider"] or "desconhecido")
+            model = str(row["model"] or "desconhecido")
+            key = (ts.date().isoformat(), provider, model)
+            ent = rows.setdefault(key, {
+                "date": key[0], "provider": provider, "model": model,
+                "requests": 0, "input": 0, "output": 0, "cost": 0.0,
+            })
+            ent["requests"] += 1
+            ent["input"] += int(row["promptTokens"] or 0)
+            ent["output"] += int(row["completionTokens"] or 0)
+            ent["cost"] += float(row["cost"] or 0)
+    finally:
+        conn.close()
+    out = sorted(rows.values(), key=lambda r: (r["date"], r["provider"], r["model"]))
+    for row in out:
+        row["tokens"] = row["input"] + row["output"]
+        row["cost"] = round(row["cost"], 6)
+    return out
+
+
+def _csv_cell(value) -> str:
+    """Planilha interpreta =, +, - e @ como fórmula; o apóstrofo mantém o texto literal."""
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
+def accounting_csv(month: str = "") -> tuple[str, str]:
+    resolved = resolve_month(month)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["date", "provider", "model", "requests", "input_tokens",
+                     "output_tokens", "tokens", "currency", "cost_usd"])
+    for row in month_accounting(resolved):
+        writer.writerow([
+            row["date"], _csv_cell(row["provider"]), _csv_cell(row["model"]),
+            row["requests"], row["input"], row["output"], row["tokens"], "USD", f"{row['cost']:.6f}",
+        ])
+    return resolved, "\ufeff" + buffer.getvalue()
 
 
 def _pctile(values: list[float], p: float) -> float | None:
@@ -1669,13 +1735,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _send(self, status: int, body: bytes, ctype: str):
+    def _send(self, status: int, body: bytes, ctype: str, headers: dict[str, str] | None = None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1717,6 +1785,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"online": False, "error": "falha ao listar a frota", "detail": _clean(str(exc), 160)})
         elif path == "/api/settings":
             self._json(200, {"ok": True, **public_settings()})
+        elif path == "/api/export.csv":
+            month = (parse_qs(urlparse(self.path).query).get("month") or [""])[0]
+            try:
+                resolved, body = accounting_csv(month)
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"ok": False, "error": "falha ao exportar", "detail": _clean(str(exc), 160)})
+                return
+            self._send(
+                200, body.encode("utf-8"), "text/csv; charset=utf-8",
+                {"Content-Disposition": f'attachment; filename="rune-{resolved}.csv"'},
+            )
         elif path == "/api/security":
             try:
                 self._json(200, security_audit())

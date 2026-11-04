@@ -49,7 +49,7 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 - **Gasto do mês** calculado no servidor a partir do `usageHistory` do 9router (não dos últimos 14 dias): custo do mês, projeção por dia corrido, cache hit e quebra por provedor.
 - **Motor de alertas** para orçamento estourado, cota baixa, cache abaixo da meta, erros e coleta parada — incluindo notificação nativa do macOS e webhook (só HTTPS ou loopback), com deduplicação e espera configurável entre avisos.
 - **SLO por provedor** na janela de 7 dias: p50, p95, tempo até o primeiro token e taxa de erro.
-- **Exportação CSV** com série diária e resumo por provedor, em `cost_usd`.
+- **Exportação CSV** em duas camadas: série diária com resumo por provedor e fechamento do mês por dia, provedor e modelo (`/api/export.csv`), sempre em `cost_usd`.
 - **Endpoint Prometheus** em `/metrics` (`rune_cost_today_usd`, `rune_provider_cost_usd`) com cache de 20 s para não remontar o snapshot a cada scrape.
 - **Auditoria local** de permissões de arquivo, segredos em texto, exposição do 9router e exigência de API key.
 - **Manual "Como jogar"** em 5 passos, com checklist ao vivo do que já está funcionando.
@@ -124,6 +124,7 @@ O CI em `.github/workflows/ci.yml` roda os mesmos comandos a cada push e pull re
 | `/api/probe` | POST | Sonda de orquestração. Corpo `{"connection":"codex"}` testa a rota, `{"model":"cx/gpt-6.1-sol"}` testa um modelo e `{"all":true}` testa todas. Cada teste é uma chamada de 1 token. |
 | `/api/settings` | GET | Orçamentos e preferências de alerta. O webhook volta mascarado (`webhook_set`, `webhook_host`), nunca completo. |
 | `/api/settings` | POST | Salva orçamentos e alertas em `.rune-data/settings.json`. Para remover o webhook, envie `{"alerts":{"webhook_clear":true}}`. |
+| `/api/export.csv` | GET | Fechamento do mês por dia, provedor e modelo. Aceita `?month=YYYY-MM`; sem parâmetro, usa o mês atual. Valores em `cost_usd`, com BOM para abrir no Excel. |
 | `/api/security` | GET | Auditoria local, com achados e correções. |
 | `/metrics` | GET | Métricas Prometheus. |
 | `/api/health` | GET | Processo e porta. |
