@@ -47,6 +47,7 @@ Ferramentas de IA cobram por token, por crédito e por janela de uso. O gasto re
 - **Sonda de orquestração** ("Testar rotas"): prova com uma chamada de 1 token se a rota responde de verdade, sem depender do que o catálogo promete. O resultado fica em `.rune-data/fleet.json` (`0600`) e sobrevive ao reload; o número "X de 11 rotas respondem" aparece no dock do Atlas.
 - **Orçamentos** em BRL, USD ou EUR, com limite global, limite por provedor e marcador de alerta (50–90%). O custo-base é USD, como o 9router grava; a conversão acontece só na exibição e no formulário. O orçamento é salvo no servidor em `.rune-data/settings.json` (`0600`), então vale para qualquer navegador e para os alertas fora da aba.
 - **Gasto do mês** calculado no servidor a partir do `usageHistory` do 9router (não dos últimos 14 dias): custo do mês, projeção por dia corrido, cache hit e quebra por provedor.
+- **Histórico de 12 meses** no Fluxo: custo, tokens, chamadas e cache hit por mês, direto do histórico do 9router, com o mês corrente destacado e meses sem uso zerados para a comparação ficar honesta.
 - **Motor de alertas** para orçamento estourado, cota baixa, cache abaixo da meta, erros e coleta parada — incluindo notificação nativa do macOS e webhook (só HTTPS ou loopback), com deduplicação e espera configurável entre avisos.
 - **SLO por provedor** na janela de 7 dias: p50, p95, tempo até o primeiro token e taxa de erro.
 - **Exportação CSV** em duas camadas: série diária com resumo por provedor e fechamento do mês por dia, provedor e modelo (`/api/export.csv`), sempre em `cost_usd`.
@@ -119,7 +120,7 @@ O CI em `.github/workflows/ci.yml` roda os mesmos comandos a cada push e pull re
 
 | Rota | Método | Conteúdo |
 |---|---|---|
-| `/api/snapshot` | GET | Snapshot completo usado pelo painel, incluindo `fleet.routes`, o gasto do mês (`month`) e os orçamentos/alertas (`settings`, `alerts`). |
+| `/api/snapshot` | GET | Snapshot completo usado pelo painel, incluindo `fleet.routes`, o gasto do mês (`month`), a série de 12 meses (`months`) e os orçamentos/alertas (`settings`, `alerts`). |
 | `/api/fleet` | GET | Catálogo vivo do 9router (`/v1/models`): modelos, donos, contexto e capacidades. |
 | `/api/probe` | POST | Sonda de orquestração. Corpo `{"connection":"codex"}` testa a rota, `{"model":"cx/gpt-6.1-sol"}` testa um modelo e `{"all":true}` testa todas. Cada teste é uma chamada de 1 token. |
 | `/api/settings` | GET | Orçamentos e preferências de alerta. O webhook volta mascarado (`webhook_set`, `webhook_host`), nunca completo. |

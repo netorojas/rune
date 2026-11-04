@@ -538,6 +538,45 @@ class AccountingCsvTests(unittest.TestCase):
         self.assertIn("date,provider,model", body)
 
 
+class MonthTrendTests(unittest.TestCase):
+    def test_twelve_months_fill_gaps_and_cut_older_history(self):
+        with tempfile.TemporaryDirectory() as raw:
+            db = Path(raw) / "router.sqlite"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE usageDaily (dateKey TEXT, data TEXT)")
+            conn.execute(
+                "CREATE TABLE usageHistory (timestamp TEXT, provider TEXT, model TEXT, "
+                "promptTokens INTEGER, completionTokens INTEGER, cost REAL, status TEXT, tokens TEXT)"
+            )
+            conn.execute("CREATE TABLE requestDetails (timestamp TEXT, provider TEXT, model TEXT, status TEXT, data TEXT)")
+            now = server.datetime.now().astimezone()
+
+            def iso(months_ago: int) -> str:
+                year, month = now.year, now.month - months_ago
+                while month <= 0:
+                    month += 12
+                    year -= 1
+                return server.datetime(year, month, 5, 12, 0, tzinfo=now.tzinfo).isoformat()
+
+            conn.executemany("INSERT INTO usageHistory VALUES (?,?,?,?,?,?,?,?)", [
+                (iso(0), "codex", "gpt-5", 100, 20, 0.5, "success", "{}"),
+                (iso(1), "codex", "gpt-5", 100, 20, 0.25, "success", "{}"),
+                (iso(11), "codex", "gpt-5", 50, 10, 0.1, "success", "{}"),
+                (iso(12), "codex", "gpt-5", 50, 10, 9.0, "success", "{}"),
+            ])
+            conn.commit()
+            conn.close()
+            with mock.patch.object(server, "ROUTER_DB", db):
+                usage = server.load_router_usage(days=2)
+        months = usage["months"]
+        self.assertEqual(len(months), 12)
+        self.assertEqual(months[-1]["cost"], 0.5)
+        self.assertEqual(months[-2]["cost"], 0.25)
+        self.assertEqual(months[0]["cost"], 0.1)
+        self.assertAlmostEqual(sum(m["cost"] for m in months), 0.85)
+        self.assertEqual(months[-1]["label"], f"{now.month:02d}/{str(now.year)[2:]}")
+
+
 class DynamicRouteTests(unittest.TestCase):
     def test_unknown_owner_becomes_a_probeable_route(self):
         catalog = {"online": True, "total": 1, "owners": [{

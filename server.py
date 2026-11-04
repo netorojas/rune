@@ -476,6 +476,7 @@ def load_router_usage(days: int = 14) -> dict:
         month_active: set[str] = set()
         month = {"month": end.strftime("%Y-%m"), "cost": 0.0, "tokens": 0, "requests": 0,
                  "input": 0, "cached": 0, "providers": {}}
+        months: dict[str, dict] = {}
         hours: dict[str, list[dict]] = {}
         for row in conn.execute("SELECT timestamp, provider, promptTokens, completionTokens, cost, tokens FROM usageHistory"):
             raw_ts = row["timestamp"]
@@ -492,6 +493,16 @@ def load_router_usage(days: int = 14) -> dict:
             total = _tokens(row["promptTokens"], row["completionTokens"])
             cost = float(row["cost"] or 0)
             prov = row["provider"]
+
+            trend = months.setdefault(ts.strftime("%Y-%m"), {
+                "month": ts.strftime("%Y-%m"), "cost": 0.0, "tokens": 0,
+                "requests": 0, "input": 0, "cached": 0,
+            })
+            trend["requests"] += 1
+            trend["tokens"] += total
+            trend["input"] += int(row["promptTokens"] or 0)
+            trend["cached"] += int(tok.get("cached_tokens", 0) or 0)
+            trend["cost"] += cost
 
             if ts.date() >= month_start:
                 month_active.add(ts.date().isoformat())
@@ -536,6 +547,25 @@ def load_router_usage(days: int = 14) -> dict:
             row["cost"] = round(row["cost"], 4)
             row["share"] = _pct(row["tokens"], month["tokens"])
         out["month"] = month
+
+        keys: list[str] = []
+        year, mon = end.year, end.month
+        for _ in range(12):
+            keys.append(f"{year:04d}-{mon:02d}")
+            mon -= 1
+            if mon == 0:
+                mon, year = 12, year - 1
+        keys.reverse()
+        trend: list[dict] = []
+        for key in keys:
+            row = months.get(key) or {
+                "month": key, "cost": 0.0, "tokens": 0, "requests": 0, "input": 0, "cached": 0,
+            }
+            row["cost"] = round(row["cost"], 4)
+            row["cache_hit"] = _pct(row["cached"], row["input"])
+            row["label"] = f"{key[5:]}/{key[2:4]}"
+            trend.append(row)
+        out["months"] = trend
 
         out["today"] = out["days"][-1] if out["days"] else {}
         out["providers"] = sorted(by_provider.values(), key=lambda x: x["tokens"], reverse=True)
@@ -1463,6 +1493,7 @@ def build_snapshot() -> dict:
         },
         "series": days,
         "month": router.get("month") or {},
+        "months": router.get("months") or [],
         "settings": settings_view,
         "hours": router.get("hours", {}),
         "totals": {

@@ -3333,7 +3333,7 @@
     const dot = (tone) => tone === "bad" ? "#c15546" : tone === "warn" ? "#e6a62d" : "#2f9e6b";
     return `<div class="w-card" style="margin-top:12px">
       <div class="w-card-head"><div><h3>${esc(tr("health.title"))}</h3><p>${esc(tr("health.sub"))}</p></div><span class="pill">${esc(tr(`health.${overall.tone || "ok"}`))}</span></div>
-      <div class="w-table">
+      <div class="w-table health-table">
         <div class="w-row head" style="grid-template-columns:minmax(0,1fr) 64px 64px 64px 56px 66px">
           <span>${esc(tr("health.provider"))}</span><span>${esc(tr("health.calls"))}</span><span>${esc(tr("health.p50"))}</span><span>${esc(tr("health.p95"))}</span><span>${esc(tr("health.errorRate"))}</span><span>${esc(tr("health.ttft"))}</span>
         </div>
@@ -4310,6 +4310,27 @@
     <div class="heat-legend"><span>menos</span><i style="--hc:#ff4b2b;--op:.12"></i><i style="--hc:#ff4b2b;--op:.3"></i><i style="--hc:#ff4b2b;--op:.55"></i><i style="--hc:#ff4b2b;--op:.85"></i><span>mais</span><span style="margin-left:auto">pico: ${compact(max)} tokens numa hora</span></div>`;
   }
 
+  function yearTrendHtml() {
+    const months = (state.snap.months || []).filter((m) => m && m.month);
+    if (!months.length) {
+      return `<div class="drw-note" style="margin-top:10px">${esc(tr("fluxo.yearEmpty"))}</div>`;
+    }
+    const current = state.snap.month?.month || "";
+    const max = Math.max(0.0001, ...months.map((m) => Number(m.cost) || 0));
+    const total = months.reduce((sum, m) => sum + (Number(m.cost) || 0), 0);
+    const peak = months.reduce((a, b) => ((Number(b.cost) || 0) > (Number(a.cost) || 0) ? b : a), months[0]);
+    const bars = months.map((m) => {
+      const cost = Number(m.cost) || 0;
+      const h = cost > 0 ? Math.max(3, Math.round((cost / max) * 84)) : 2;
+      const on = m.month === current ? " on" : "";
+      const zero = cost > 0 ? "" : " zero";
+      const title = `${m.label} · ${money(cost)} · ${compact(m.tokens || 0)} tokens · ${int(m.requests || 0)} chamadas · cache ${pct(m.cache_hit || 0)}`;
+      return `<div class="year-col${on}${zero}" title="${esc(title)}"><i style="height:${h}px"></i><span>${esc(m.label)}</span></div>`;
+    }).join("");
+    return `<div class="year-strip">${bars}</div>
+      <div class="heat-legend"><span>${esc(tr("fluxo.yearPeak"))}: ${esc(peak.label)} · ${money(peak.cost)}</span><span style="margin-left:auto">${esc(tr("fluxo.yearAvg"))}: ${esc(tr("fluxo.yearPerMonth", { v: money(total / months.length) }))}</span></div>`;
+  }
+
   const MANUAL_TASKS = [
     { key: "code", label: "Código no repositório", pick: "codex", alt: "antigravity", why: "Precisa ler arquivos, editar, rodar testes e iterar com ferramentas. O Codex é o agente mais maduro para esse ciclo; o Antigravity cobre o mesmo terreno quando o trabalho é multimodal ou exige planejamento visual.", watch: "Sessões longas inflam o input fixo. Reaproveite cache e desligue plugins/MCP que não usa." },
     { key: "text", label: "Texto e análise crítica", pick: "claude", alt: "gemini", why: "Quando a resposta precisa de nuance, justificativa e contexto longo, o Claude tende a ser mais cuidadoso. O Gemini entra bem para contexto enorme e custo menor.", watch: "Modelos premium do Claude exigem créditos nesta conexão; confira o saldo antes de um bloco longo." },
@@ -4323,7 +4344,7 @@
   const MANUAL_ORDER = ["codex", "claude", "antigravity", "gemini", "gemini-cli", "openrouter", "nvidia", "ollama", "cloudflare-ai", "opencode"];
 
   const CHANGELOG = [
-    { date: "03/11/2026", title: "v0.1 · Atlas vivo", text: "Dez alas, cota do Codex e do Claude, gráfico hora a hora, mapa de calor, radar de risco, cockpit com diagnósticos e prompts prontos. Manual da Frota com nove IAs conectadas.", now: true },
+    { date: "03/11/2026", title: "v0.1 · Atlas vivo", text: "Dez alas, cota do Codex e do Claude, gráfico hora a hora, mapa de calor e radar de risco. Histórico de 12 meses, orçamentos no servidor, alertas fora da aba e exportação contábil em CSV.", now: true },
     { date: "02/11/2026", title: "Cotas e coletores", text: "Leitura somente-local do 9router, Qoder Desktop e coletor. Sanitização de chaves, redaction de contas e servidor em 127.0.0.1.", now: false },
     { date: "01/11/2026", title: "Frota e projetos", text: "Inventário de conexões, modelos, combos, projetos e sessões. Primeiros diagnósticos de erro com prompt de correção.", now: false },
     { date: "31/10/2026", title: "Fundação", text: "Primeiro snapshot derivado: tokens, custo, cache e distribuição por provedor. Nenhum prompt persistido.", now: false },
@@ -4351,6 +4372,7 @@
     const providers = (S.providers || []).slice(0, 4);
     const daysRows = (S.series || []).slice(-7).reverse();
     const maxDay = Math.max(1, ...daysRows.map((d) => d.tokens));
+    const yearTotal = (S.months || []).reduce((sum, m) => sum + (Number(m.cost) || 0), 0);
     return `
       <div class="w-hero">
         <div class="big">${compact(t.tokens)}<small> tokens</small></div>
@@ -4392,8 +4414,12 @@
         ${heatmapHtml()}
       </div>
       <div class="w-card" style="margin-top:12px">
+        <div class="w-card-head"><div><h3>${esc(tr("fluxo.yearTitle"))}</h3><p>${esc(tr("fluxo.yearSub"))}</p></div><span class="pill">${money(yearTotal)}</span></div>
+        ${yearTrendHtml()}
+      </div>
+      <div class="w-card" style="margin-top:12px">
         <div class="w-card-head"><div><h3>Últimos dias</h3><p>comparado com a média dos dias ativos</p></div><span class="pill">${money(t.cost)} no total</span></div>
-        <div class="w-table">
+        <div class="w-table days-table">
           <div class="w-row head" style="grid-template-columns:minmax(0,1fr) 76px 90px 86px 90px"><span>dia</span><span>chamadas</span><span>tokens</span><span>custo</span><span>vs média</span></div>
           ${daysRows.map((d) => {
             const delta = t.avgTokens ? ((d.tokens - t.avgTokens) / t.avgTokens) * 100 : 0;
