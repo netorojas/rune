@@ -1597,7 +1597,7 @@
 
   function portGhostNode(slot) {
     const w = 116, d = 56, h = 58;
-    return `<g class="port-node ghost" data-act="park" tabindex="0" role="button" aria-label="${esc(tr("port.addSlot"))}">
+    return `<g class="port-node ghost" data-act="park" data-focus="add" tabindex="0" role="button" aria-label="${esc(tr("port.addSlot"))}">
       <title>${esc(tr("port.addSlot"))}</title>
       <g transform="translate(${slot.x} ${slot.y})">
         <ellipse class="port-plate" cx="0" cy="${d / 2 + 10}" rx="${w * .7}" ry="${d * .4}"/>
@@ -2873,7 +2873,7 @@
   act("port-zoom-in", () => portZoom(1.18));
   act("port-zoom-out", () => portZoom(.85));
   act("port-reset", () => portResetCamera());
-  act("park", () => openParkDrawer());
+  act("park", (el) => openParkDrawer(el?.dataset?.focus || ""));
   act("park-close", () => closeDrawer());
   act("sugg-run", (el) => {
     const s = (state.snap?.suggestions || [])[Number(el.dataset.i)];
@@ -3937,7 +3937,7 @@
     `;
   }
 
-  function openParkDrawer() {
+  function openParkDrawer(focus = "") {
     if (!state.snap) { toast(tr("common.loading"), "warn"); return; }
     state.settingsOpen = false;
     state.budgetOpen = false;
@@ -3948,6 +3948,16 @@
     d.setAttribute("aria-hidden", "false");
     void d.offsetWidth;
     d.classList.add("open");
+    if (focus === "add") {
+      const grid = $(".park-add-grid");
+      if (grid) {
+        setTimeout(() => {
+          grid.scrollIntoView({ block: "center", behavior: "smooth" });
+          grid.classList.add("pulse");
+          setTimeout(() => grid.classList.remove("pulse"), 1600);
+        }, 80);
+      }
+    }
   }
 
   function openProviderDrawer(key) {
