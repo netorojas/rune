@@ -2131,8 +2131,10 @@ kbd {
 .year-col {
   flex: 1; height: 100%; display: flex; flex-direction: column;
   justify-content: flex-end; align-items: center; gap: 6px; min-width: 0;
-  position: relative;
+  position: relative; padding: 0; border: 0; background: none; font: inherit;
+  color: inherit; cursor: pointer;
 }
+.year-col:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 4px; }
 .year-col::before {
   content: ""; position: absolute; left: 0; right: 0; top: 0; bottom: 22px;
   border-radius: 4px; background: rgba(30, 70, 84, .04);

@@ -2865,6 +2865,7 @@
   act("export-json", () => exportJson());
   act("export-csv", () => exportCsv());
   act("export-month", () => exportMonthCsv());
+  act("year-month", (el) => exportMonthCsv(el.dataset.month));
   act("open-url", (el) => {
     const url = String(el.dataset.url || "");
     if (!/^https?:\/\//i.test(url)) { toast("Link indisponível neste snapshot", "warn"); return; }
@@ -3390,8 +3391,8 @@
     toast(tr("fluxo.csvSaved"));
   }
 
-  function exportMonthCsv() {
-    const month = state.snap?.month?.month || new Date().toISOString().slice(0, 7);
+  function exportMonthCsv(target) {
+    const month = target || state.snap?.month?.month || new Date().toISOString().slice(0, 7);
     const a = document.createElement("a");
     a.href = `/api/export.csv?month=${encodeURIComponent(month)}`;
     a.download = `rune-${month}.csv`;
@@ -4324,8 +4325,8 @@
       const h = cost > 0 ? Math.max(3, Math.round((cost / max) * 84)) : 2;
       const on = m.month === current ? " on" : "";
       const zero = cost > 0 ? "" : " zero";
-      const title = `${m.label} · ${money(cost)} · ${compact(m.tokens || 0)} tokens · ${int(m.requests || 0)} chamadas · cache ${pct(m.cache_hit || 0)}`;
-      return `<div class="year-col${on}${zero}" title="${esc(title)}"><i style="height:${h}px"></i><span>${esc(m.label)}</span></div>`;
+      const title = `${m.label} · ${money(cost)} · ${compact(m.tokens || 0)} tokens · ${int(m.requests || 0)} chamadas · cache ${pct(m.cache_hit || 0)} · CSV`;
+      return `<button type="button" class="year-col${on}${zero}" data-act="year-month" data-month="${esc(m.month)}" title="${esc(title)}"><i style="height:${h}px"></i><span>${esc(m.label)}</span></button>`;
     }).join("");
     return `<div class="year-strip">${bars}</div>
       <div class="heat-legend"><span>${esc(tr("fluxo.yearPeak"))}: ${esc(peak.label)} · ${money(peak.cost)}</span><span style="margin-left:auto">${esc(tr("fluxo.yearAvg"))}: ${esc(tr("fluxo.yearPerMonth", { v: money(total / months.length) }))}</span></div>`;
