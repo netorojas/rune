@@ -1736,13 +1736,15 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, status: int, body: bytes, ctype: str, headers: dict[str, str] | None = None):
+        headers = headers or {}
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        if "Cache-Control" not in headers:
+            self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        for key, value in (headers or {}).items():
+        for key, value in headers.items():
             self.send_header(key, value)
         self.end_headers()
         try:
@@ -1910,11 +1912,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def _file(self, path: Path, ctype: str):
         try:
+            stat = path.stat()
+        except OSError:
+            self._json(404, {"error": "arquivo não encontrado"})
+            return
+        etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        try:
             body = path.read_bytes()
         except OSError:
             self._json(404, {"error": "arquivo não encontrado"})
             return
-        self._send(200, body, ctype)
+        self._send(200, body, ctype, {"ETag": etag, "Cache-Control": "no-cache"})
 
 
 def main() -> int:
