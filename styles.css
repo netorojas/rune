@@ -5568,6 +5568,23 @@ body { background: var(--paper); }
   cursor: pointer;
 }
 .ins-back:hover { background: rgba(18, 32, 28, .05); }
+.drw-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 5px 11px 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(18, 32, 28, .14);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.drw-back:hover { background: rgba(18, 32, 28, .06); }
+.app[data-light="dusk"] .drw-back { border-color: rgba(162, 210, 208, .18); color: var(--ink-2); }
 .ins-cta {
   width: 100%;
   display: flex;
@@ -6759,3 +6776,93 @@ button.dkpi:hover { background: var(--paper-2); }
 }
 .quay-strip:hover { border-color: var(--line-strong); background: var(--paper-2); }
 .app[data-light="dusk"] .quay-strip:hover { background: rgba(255, 255, 255, .03); }
+
+/* ------------------------------------------------------------ configurar parque */
+button.sugg-row {
+  width: 100%; text-align: left; border: 0; border-top: 1px solid var(--rule-soft);
+  background: transparent; font: inherit; color: inherit; cursor: pointer;
+  grid-template-columns: 6px minmax(0, 1fr) auto;
+}
+button.sugg-row:first-of-type { border-top: 0; }
+button.sugg-row:hover b { color: var(--lime-deep); }
+button.sugg-row strong {
+  align-self: center; font-family: var(--mono); font-size: 8px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap;
+}
+button.sugg-row:hover strong { color: var(--lime-deep); }
+
+.ins-cta-row { display: grid; grid-template-columns: 1.2fr .8fr; gap: 6px; margin-top: 4px; }
+.ins-cta-row .ins-cta { margin-top: 0; padding: 8px 11px; font-size: 11px; }
+.ins-cta.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line-strong); }
+.ins-cta.ghost:hover { background: var(--paper-2); }
+.ins-cta.ghost span { opacity: .55; }
+.app[data-light="dusk"] .ins-cta.ghost {
+  background: transparent; color: var(--ink); border-color: var(--line-strong);
+}
+.app[data-light="dusk"] .ins-cta.ghost:hover { background: rgba(255, 255, 255, .05); }
+
+.park-tools-row { display: flex; gap: 5px; margin-top: 8px; }
+.park-list { display: grid; gap: 6px; margin-top: 8px; min-width: 0; }
+.park-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 8px 10px; border-radius: 11px;
+  background: rgba(30, 70, 84, .035); border: 1px solid rgba(30, 70, 84, .06);
+}
+.park-row.warn { border-color: rgba(230, 166, 45, .3); background: rgba(230, 166, 45, .07); }
+.park-row.none { border-style: dashed; }
+.park-row .park-open {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px;
+  background: transparent; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer;
+}
+.park-mark {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center;
+  background: rgba(44, 97, 87, .1); color: var(--pc, #2C6157);
+  border: 1px solid rgba(44, 97, 87, .2);
+  font-family: var(--display); font-size: 12px; font-weight: 700;
+}
+.park-main { min-width: 0; display: block; }
+.park-main b { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.park-main em {
+  display: block; font-size: 10px; font-style: normal; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.park-actions { display: flex; gap: 5px; flex: 0 0 auto; }
+.park-act {
+  border: 1px solid var(--line-strong); background: transparent; color: var(--ink);
+  border-radius: 999px; padding: 5px 9px; font: inherit;
+  font-family: var(--mono); font-size: 8px; font-weight: 600;
+  letter-spacing: .05em; text-transform: uppercase; cursor: pointer; white-space: nowrap;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+.park-act:hover { border-color: var(--lime-deep); color: var(--lime-deep); }
+.park-act.primary { background: var(--ink); border-color: var(--ink); color: #F7F3E7; }
+.park-act.primary:hover { background: #1D332B; color: #F7F3E7; }
+.park-act[disabled] { opacity: .5; cursor: default; }
+.park-add-grid { display: grid; gap: 6px; margin-top: 8px; }
+.park-add {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: 10px;
+  border: 1px dashed var(--line-strong); background: transparent;
+}
+.park-add .park-main { flex: 1; }
+.park-empty {
+  margin-top: 8px; padding: 12px; border-radius: 10px; text-align: center;
+  border: 1px dashed var(--line-strong); font-size: 11.5px; color: var(--muted);
+}
+.park-sugg { display: grid; margin-top: 6px; }
+
+.app[data-light="dusk"] .park-row { background: rgba(255, 255, 255, .03); border-color: var(--line); }
+.app[data-light="dusk"] .park-mark { background: rgba(255, 255, 255, .06); border-color: var(--line-strong); }
+.app[data-light="dusk"] .park-act { border-color: var(--line-strong); color: var(--ink); }
+.app[data-light="dusk"] .park-act.primary { background: var(--lime); border-color: var(--lime); color: #0D1A15; }
+
+/* docas livres e atalho de adição no mapa */
+.port-node.ghost { cursor: pointer; }
+.port-node.ghost .iso { opacity: .4; }
+.port-node.ghost:hover .iso { opacity: .58; }
+.port-node.ghost .port-plate { opacity: .5; }
+.port-node.ghost .port-name { fill: #3E6B5A; }
+.port-add { pointer-events: none; }
+.port-zoom button.port-zoom-park { color: #2C6157; }
+.port-zoom button.port-zoom-park svg { width: 18px; height: 18px; }

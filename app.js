@@ -935,6 +935,8 @@
       { x: 808, y: 320 },
       { x: 262, y: 522 },
       { x: 938, y: 522 },
+      { x: 408, y: 558 },
+      { x: 792, y: 558 },
     ],
     tool: [
       { x: 288, y: 806 },
@@ -946,8 +948,14 @@
   };
 
   function portProviders() {
-    const rows = (state.snap?.providers || []).filter((p) => Number(p.tokens) > 0);
-    return (rows.length ? rows : (state.snap?.providers || [])).slice(0, 4);
+    const S = state.snap;
+    const usage = S?.providers || [];
+    const active = new Set((S?.connections || []).filter((c) => c.status === "active").map((c) => c.provider));
+    const rows = usage.filter((p) => Number(p.tokens) > 0 || active.has(p.provider));
+    active.forEach((key) => { if (!rows.some((p) => p.provider === key)) rows.push({ provider: key, tokens: 0, share: 0, cost: 0 }); });
+    return rows
+      .sort((a, b) => (Number(active.has(b.provider)) - Number(active.has(a.provider))) || (Number(b.tokens || 0) - Number(a.tokens || 0)))
+      .slice(0, PORT_LAYOUT.ai.length);
   }
 
   function portTools() {
@@ -971,31 +979,36 @@
     const right = mixHex(color, "#0F1A15", .26);
     const glass = "#FFF4CE";
     const detail = opts.detail !== false;
+    // Cada fachada tem sua própria inclinação; sem isso as janelas descolam do prédio.
+    const slope = d / w;
+    const faceAt = (face, u, v) => face === "left"
+      ? [-w / 2 + u * (w / 2), -h + u * (d / 2) + v * h]
+      : [u * (w / 2), -h + d / 2 - u * (d / 2) + v * h];
+    const pane = (face, u, v, len, height) => {
+      const [x, y] = faceAt(face, u, v);
+      const dy = (face === "left" ? 1 : -1) * len * slope;
+      return `M${x.toFixed(1)} ${y.toFixed(1)}l${len.toFixed(1)} ${dy.toFixed(1)}v${height.toFixed(1)}l${(-len).toFixed(1)} ${(-dy).toFixed(1)}z`;
+    };
     let windows = "";
     if (opts.windows !== false) {
-      const rows = opts.rows || [0.24, 0.5, 0.76];
+      const rows = opts.rows || [0.2, 0.44, 0.68];
       const shade = opts.shade || "#E9D9A6";
+      const len = Math.max(4.5, Math.min(10, w * 0.11));
+      const winH = Math.max(3.6, Math.min(8, h * 0.15));
+      const step = opts.dense ? 0.2 : 0.27;
       rows.forEach((v, ri) => {
-        const x = (w / 2) * (opts.cols || 0.56);
-        const y = -h + d / 2 + v * h;
-        windows += `<path class="port-win" style="animation-delay:${(ri * -1.7 + (opts.delay || 0)).toFixed(1)}s" d="M${x.toFixed(1)} ${y.toFixed(1)}l9 -4.4v7.2l-9 4.4z" fill="${glass}" opacity="${opts.glow ? .94 : .7}" stroke="${ink}" stroke-width=".6"/>`;
-        windows += `<path class="port-win" style="animation-delay:${(ri * -1.9 + .6).toFixed(1)}s" d="M${(-w / 2 + 12).toFixed(1)} ${(y + 4).toFixed(1)}l8 -4v6.4l-8 4z" fill="${glass}" opacity=".34" stroke="${ink}" stroke-width=".5"/>`;
-        // Janelas da face direita: sem elas a fachada sombreada fica chapada.
-        [.3, .58].forEach((u, ci) => {
-          const wx = u * w / 2;
-          const wy = -h + d / 2 - (d / 2) * u + v * h;
-          windows += `<path class="port-win" style="animation-delay:${(ri * -1.5 + ci * .7 + .3).toFixed(1)}s" d="M${wx.toFixed(1)} ${wy.toFixed(1)}l${(9 - u * 3).toFixed(1)} ${(-4.4 + u * 1.4).toFixed(1)}v7.2l${(-9 + u * 3).toFixed(1)} ${(4.4 - u * 1.4).toFixed(1)}z" fill="${opts.glow ? shade : glass}" opacity="${opts.glow ? .8 : .42}" stroke="${ink}" stroke-width=".5"/>`;
-        });
-        if (detail) {
-          windows += `<path class="port-win" style="animation-delay:${(ri * -2.4 + 1.1).toFixed(1)}s" d="M${(x * .46).toFixed(1)} ${(y + 2.2).toFixed(1)}l7 -3.4v5.6l-7 3.4z" fill="${glass}" opacity=".6" stroke="${ink}" stroke-width=".5"/>`;
+        for (let u = 0.13; u <= 0.86; u += step) {
+          windows += `<path class="port-win" style="animation-delay:${(ri * -1.7 + u * 1.6 + (opts.delay || 0)).toFixed(1)}s" d="${pane("left", u, v, len, winH)}" fill="${glass}" opacity="${opts.glow ? .94 : .72}" stroke="${ink}" stroke-width=".6"/>`;
         }
-        if (opts.dense) {
-          windows += `<path class="port-win" style="animation-delay:${(ri * -1.3 + .4).toFixed(1)}s" d="M${(x * .18).toFixed(1)} ${(y + 2.8).toFixed(1)}l7 -3.4v5.6l-7 3.4z" fill="${glass}" opacity=".5" stroke="${ink}" stroke-width=".5"/>`;
+        for (let u = 0.18; u <= 0.84; u += 0.34) {
+          windows += `<path class="port-win" style="animation-delay:${(ri * -1.5 + u * 1.9 + .3).toFixed(1)}s" d="${pane("right", u, v, len * .88, winH * .92)}" fill="${opts.glow ? shade : glass}" opacity="${opts.glow ? .8 : .46}" stroke="${ink}" stroke-width=".5"/>`;
         }
       });
     }
-    const door = detail && h > 46
-      ? `<path d="M${(w * .12).toFixed(1)} ${(d / 2 - w * .03).toFixed(1)}l${(w * .13).toFixed(1)} ${(-w * .065).toFixed(1)}v${(-h * .2).toFixed(1)}l${(-w * .13).toFixed(1)} ${(w * .065).toFixed(1)}z" fill="${ink}" opacity=".26"/>`
+    const doorH = Math.max(9, Math.min(h * 0.26, 18));
+    const doorW = Math.max(5, Math.min(w * 0.11, 11));
+    const door = detail && h > 34
+      ? `<path d="${pane("right", 0.4, 1 - doorH / h, doorW, doorH)}" fill="${ink}" opacity=".3"/>`
       : "";
     const roof = detail
       ? `<path d="M0 ${(-h - 7).toFixed(1)}l9 -4.5 9 4.5-9 4.5z" fill="${right}" stroke="${ink}" stroke-width=".9" stroke-linejoin="round"/>
@@ -1313,8 +1326,8 @@
   function portGround() {
     const trees = [
       [236, 430, .95, 0], [300, 350, .85, 1], [336, 588, .9, 2],
-      [420, 660, .85, 0], [560, 690, .8, 1], [700, 680, .9, 2],
-      [800, 640, .85, 0], [928, 602, .95, 1], [956, 414, .85, 0],
+      [300, 636, .85, 0], [492, 676, .8, 1], [708, 676, .9, 2],
+      [900, 636, .85, 0], [928, 602, .95, 1], [956, 414, .85, 0],
       [892, 362, .9, 2], [500, 306, .8, 2], [704, 300, .8, 1],
       [392, 462, .7, 1], [812, 470, .68, 0],
     ];
@@ -1582,6 +1595,23 @@
     </g>`;
   }
 
+  function portGhostNode(slot) {
+    const w = 116, d = 56, h = 58;
+    return `<g class="port-node ghost" data-act="park" tabindex="0" role="button" aria-label="${esc(tr("port.addSlot"))}">
+      <title>${esc(tr("port.addSlot"))}</title>
+      <g transform="translate(${slot.x} ${slot.y})">
+        <ellipse class="port-plate" cx="0" cy="${d / 2 + 10}" rx="${w * .7}" ry="${d * .4}"/>
+        ${portIsoBox(w, d, h, "#C3CDBB", { windows: false, detail: false })}
+        <g class="ghost-plus" transform="translate(0 ${-h * .5})">
+          <circle r="13" fill="#FFFDF7" stroke="#2C6157" stroke-width="1.6" stroke-dasharray="3.2 3.2"/>
+          <path d="M-5 0h10M0 -5v10" stroke="#2C6157" stroke-width="2" stroke-linecap="round"/>
+        </g>
+        <text class="port-name small" y="${d / 2 + 34}" text-anchor="middle">${esc(tr("port.addSlot"))}</text>
+        <rect class="port-hit" x="${-w * .7}" y="${-h - 44}" width="${w * 1.4}" height="${h + d + 100}"/>
+      </g>
+    </g>`;
+  }
+
   function portToolNode(tool, slot) {
     const on = portSelected("tool", tool.key);
     const w = 74, d = 40, h = 52;
@@ -1592,7 +1622,8 @@
       <g transform="translate(${slot.x} ${slot.y})">
         <ellipse class="port-plate" cx="0" cy="${d / 2 + 9}" rx="46" ry="15"/>
         ${on ? `<ellipse class="port-ring" cx="0" cy="${d / 2 + 6}" rx="58" ry="25"/>` : ""}
-        ${portIsoBox(w, d, h, color, { cols: 0.7, rows: [0.28, 0.6], extra: flag + portToolRoof(tool, w, d, h), glow: tool.installed })}
+        ${portIsoBox(w, d, h, color, { rows: [0.28, 0.6], extra: flag + portToolRoof(tool, w, d, h), glow: tool.installed })}
+        ${tool.installed ? "" : `<g class="port-add" transform="translate(${(-w * .32).toFixed(1)} ${(-h - 8).toFixed(1)})"><circle r="9" fill="#FFFDF7" stroke="#8F8778" stroke-width="1.3"/><path d="M-3.5 0h7M0 -3.5v7" stroke="#3E6B5A" stroke-width="1.8" stroke-linecap="round"/></g>`}
         <text class="port-name small" y="${d / 2 + 30}" text-anchor="middle">${esc(tool.name)}</text>
         <text class="port-role" y="${d / 2 + 45}" text-anchor="middle">${esc((tool.installed ? tr("port.installed") : tr("port.missing")).toUpperCase())}</text>
         <rect class="port-hit" x="-60" y="${-h - 44}" width="120" height="${h + d + 106}"/>
@@ -1611,6 +1642,9 @@
 
     const nodes = [];
     providers.forEach((p, i) => nodes.push({ y: PORT_LAYOUT.ai[i].y, html: portAiNode(p, PORT_LAYOUT.ai[i], i) }));
+    for (let i = providers.length; i < PORT_LAYOUT.ai.length; i++) {
+      nodes.push({ y: PORT_LAYOUT.ai[i].y, html: portGhostNode(PORT_LAYOUT.ai[i]) });
+    }
     nodes.push({ y: PORT_LAYOUT.source.y, html: portSourceNode() });
     tools.forEach((t, i) => nodes.push({ y: PORT_LAYOUT.tool[i].y, html: portToolNode(t, PORT_LAYOUT.tool[i]) }));
     nodes.sort((a, b) => a.y - b.y);
@@ -1620,7 +1654,9 @@
       const slot = PORT_LAYOUT.ai[i];
       const meta = provMeta(p.provider);
       const active = Number(S.today?.providers?.[p.provider]?.tokens || 0) > 0;
-      const d = `M${slot.x} ${slot.y + 14} C${slot.x} ${slot.y - 34} 600 ${450} 600 468`;
+      const d = slot.y > 470
+        ? `M${slot.x} ${slot.y + 14} C${slot.x} ${slot.y - 80} 600 ${slot.y - 62} 600 500`
+        : `M${slot.x} ${slot.y + 14} C${slot.x} ${slot.y - 34} 600 450 600 468`;
       roads.push(portRoad(d, meta.color, active));
       if (active) roads.push(portTruck(d, meta.color, (8.6 + i * 1.5).toFixed(1), (-(i * 2.7)).toFixed(1)));
     });
@@ -1670,6 +1706,7 @@
     }
     const set = (sel, text) => { const el = $(sel); if (el) el.textContent = text; };
     set("#portManualLabel", tr("port.manual"));
+    set("#portParkLabel", tr("port.config"));
     set("#portHintText", tr("port.hint"));
     set("#portLegendSource", tr("port.legendSource"));
     set("#portLegendAi", tr("port.legendAi"));
@@ -1787,10 +1824,7 @@
     if (!list.length) return "";
     return `<div class="ins-block ins-sugg">
       <span class="ins-label">${esc(tr("port.ideas"))}</span>
-      ${list.map((s) => `<div class="sugg-row ${esc(s.level || "")}">
-        <i></i>
-        <span><b>${esc(s.title)}</b><em>${esc(tidyDetail(s.detail))}</em></span>
-      </div>`).join("")}
+      ${list.map((s, i) => parkSuggRow(s, i, true)).join("")}
       <button class="lim-more" data-act="wing" data-key="oraculo">${esc(tr("port.openIdeas"))} →</button>
     </div>`;
   }
@@ -1810,7 +1844,10 @@
       ${projectsBlock()}
       ${suggestionsBlock()}
       ${quayBlock()}
-      <button class="ins-cta" data-act="manual">${esc(tr("port.howTo"))} <span>5 ${esc(tr("port.steps"))}</span></button>`;
+      <div class="ins-cta-row">
+        <button class="ins-cta primary" data-act="park">${esc(tr("port.config"))} <span>+</span></button>
+        <button class="ins-cta ghost" data-act="manual">${esc(tr("port.manual"))}</button>
+      </div>`;
   }
 
   function portInspectorSource() {
@@ -1836,8 +1873,8 @@
         <div><span>${esc(tr("port.headroom"))}</span><b>${esc(router.headroom?.online ? tr("port.online") : tr("port.offline"))}</b></div>
       </div>
       <div class="ins-actions">
-        ${link ? `<button class="btn primary" data-act="open-url" data-url="${esc(link.url)}">${esc(tr("port.openRouter"))} ↗</button>` : ""}
-        <button class="btn ghost" data-act="wing" data-key="perfil">${esc(tr("port.seeConnections"))}</button>
+        <button class="btn primary" data-act="park">${esc(tr("port.config"))}</button>
+        ${link ? `<button class="btn ghost" data-act="open-url" data-url="${esc(link.url)}">${esc(tr("port.openRouter"))} ↗</button>` : ""}
       </div>
       <p class="ins-note">${esc(tr("port.privacy"))}</p>`;
   }
@@ -1869,8 +1906,8 @@
         <div><span>${esc(tr("port.profile"))}</span><b>${esc(kb?.tag || "—")}</b></div>
       </div>
       <div class="ins-actions">
-        <button class="btn primary" data-act="provider-detail" data-key="${esc(key)}">${esc(tr("port.aiManual"))}</button>
-        <button class="btn ghost" data-act="focus-flow" data-key="${esc(key)}">${esc(tr("port.seeFlow"))}</button>
+        <button class="btn primary" data-act="park">${esc(tr("port.config"))}</button>
+        <button class="btn ghost" data-act="provider-detail" data-key="${esc(key)}">${esc(tr("port.aiManual"))}</button>
       </div>
       <p class="ins-note">${esc(tr("port.privacy"))}</p>`;
   }
@@ -1895,9 +1932,9 @@
       </div>
       <p class="ins-note">${esc(tr(tool.noteKey))}</p>
       ${tool.installed
-        ? `<div class="ins-actions"><button class="btn primary" data-act="wing" data-key="sessoes">${esc(tr("port.seeSessions"))}</button></div>`
+        ? `<div class="ins-actions"><button class="btn primary" data-act="wing" data-key="sessoes">${esc(tr("port.seeSessions"))}</button><button class="btn ghost" data-act="park">${esc(tr("port.config"))}</button></div>`
         : `<div class="ins-callout">${esc(tr("port.toolMissingNote"))}</div>
-           <div class="ins-actions"><button class="btn primary" data-act="manual-step" data-step="2">${esc(tr("port.howToConnect"))}</button></div>`}
+           <div class="ins-actions"><button class="btn primary" data-act="manual-step" data-step="2">${esc(tr("port.howToConnect"))}</button><button class="btn ghost" data-act="park">${esc(tr("port.config"))}</button></div>`}
       <p class="ins-note">${esc(tr("port.privacy"))}</p>`;
   }
 
@@ -2822,7 +2859,12 @@
   act("guide", () => openManual(0));
   act("manual", () => openManual(0));
   act("manual-close", () => closeManual());
-  act("manual-step", (el) => { state.manualStep = Number(el.dataset.step) || 0; renderManual(); });
+  act("manual-step", (el) => {
+    const step = Number(el.dataset.step) || 0;
+    if ($("#manual").hidden) { openManual(step); return; }
+    state.manualStep = step;
+    renderManual();
+  });
   act("manual-next", () => manualMove(1));
   act("manual-prev", () => manualMove(-1));
   act("manual-copy", () => copyText(MANUAL_COMMAND, tr("manual.copied")));
@@ -2831,6 +2873,18 @@
   act("port-zoom-in", () => portZoom(1.18));
   act("port-zoom-out", () => portZoom(.85));
   act("port-reset", () => portResetCamera());
+  act("park", () => openParkDrawer());
+  act("park-close", () => closeDrawer());
+  act("sugg-run", (el) => {
+    const s = (state.snap?.suggestions || [])[Number(el.dataset.i)];
+    if (!s) return;
+    const target = parkSuggestionTarget(s);
+    if (target.act === "provider-detail") { openProviderDrawer(target.key); return; }
+    closeDrawer();
+    if (target.act === "port-select") portSelect(target.kind, target.key);
+    else if (target.act === "wing") openWing(target.key);
+    else if (target.act === "budget") openBudgetDrawer();
+  });
   act("focus-flow", (el) => {
     state.focus = el.dataset.key;
     closeDrawer();
@@ -3119,6 +3173,7 @@
     d.setAttribute("aria-hidden", "true");
     state.settingsOpen = false;
     state.budgetOpen = false;
+    state.drawerKey = "";
     setTimeout(() => { if (!d.classList.contains("open")) d.hidden = true; }, 300);
   }
 
@@ -3175,6 +3230,7 @@
   function openSettingsDrawer() {
     state.settingsOpen = true;
     state.budgetOpen = false;
+    state.drawerKey = "";
     renderSettingsBody();
     $("#drawer").hidden = false;
     $("#drawer").setAttribute("aria-hidden", "false");
@@ -3628,6 +3684,8 @@
 
   function openBudgetDrawer() {
     state.budgetOpen = true;
+    state.settingsOpen = false;
+    state.drawerKey = "";
     renderBudgetBody();
     const d = $("#drawer");
     d.hidden = false;
@@ -3714,8 +3772,164 @@
       .catch((err) => toast(tr("budget.saveFailed", { err: err.message }), "bad"));
   }
 
+  function routerUrl() {
+    const links = state.snap?.router?.links || [];
+    return (links.find((l) => /9router/i.test(l.label)) || links[0])?.url || "";
+  }
+
+  function parkConnections() {
+    const map = new Map();
+    (state.snap?.connections || []).forEach((c) => {
+      const prev = map.get(c.provider);
+      if (!prev || (c.status === "active" && prev.status !== "active")) map.set(c.provider, c);
+    });
+    return map;
+  }
+
+  function parkAiRows() {
+    const conns = parkConnections();
+    const usage = state.snap?.providers || [];
+    return Object.keys(PROVIDERS)
+      .map((key) => ({
+        key,
+        meta: provMeta(key),
+        conn: conns.get(key) || null,
+        usage: usage.find((p) => p.provider === key) || null,
+      }))
+      .sort((a, b) => (Number(Boolean(b.conn)) - Number(Boolean(a.conn))) || (Number(b.usage?.tokens || 0) - Number(a.usage?.tokens || 0)));
+  }
+
+  function parkSuggestionTarget(s) {
+    const title = String(s?.title || "");
+    const low = title.toLowerCase();
+    const provider = Object.keys(PROVIDERS).find((k) => low.startsWith(k.toLowerCase()));
+    if (provider) return { act: "provider-detail", key: provider, label: tr("park.fix") };
+    if (/headroom/i.test(title)) return { act: "port-select", kind: "source", key: "9router", label: tr("park.review") };
+    if (/plugin|codex|skill|contexto|verbos/i.test(title)) return { act: "wing", key: "oficina", label: tr("common.open") };
+    if (/or[çc]amento|budget|gasto|custo/i.test(title)) return { act: "budget", label: tr("common.open") };
+    return { act: "wing", key: "oraculo", label: tr("common.open") };
+  }
+
+  function parkSuggRow(s, i, compactMode) {
+    const t = parkSuggestionTarget(s);
+    const detail = tidyDetail(s.detail);
+    return `<button class="sugg-row ${esc(s.level || "")}${compactMode ? " tight" : ""}" data-act="sugg-run" data-i="${i}">
+      <i></i>
+      <span><b>${esc(s.title)}</b>${detail ? `<em>${esc(detail)}</em>` : ""}</span>
+      <strong>${esc(t.label)} →</strong>
+    </button>`;
+  }
+
+  function renderParkBody() {
+    const S = state.snap;
+    if (!S || !$("#drawerBody")) return;
+    const url = routerUrl();
+    const rows = parkAiRows();
+    const connected = rows.filter((r) => r.conn);
+    const activeCount = connected.filter((r) => r.conn.status === "active").length;
+    const addable = rows.filter((r) => !r.conn);
+    const tools = portTools();
+    const installedTools = tools.filter((t) => t.installed).length;
+    const fkeys = fleetKeys();
+    const tested = fkeys.filter((k) => probeFor(k) && probeFor(k).status !== "running");
+    const answered = tested.filter((k) => probeFor(k).status === "ok").length;
+    const sugg = (S.suggestions || []).slice(0, 4);
+    const router = S.router || {};
+    const routerOk = Boolean(S.fleet?.online);
+    const headroom = router.headroom || {};
+    const keys = (S.keys || []).length;
+    const today = S.today?.providers || {};
+
+    const aiRow = (r) => {
+      const status = r.conn ? portStatusFor(r.key) : { tone: "none", label: tr("park.noConn") };
+      const tokens = Number(today[r.key]?.tokens || 0);
+      const use = tokens ? tr("park.tokensToday", { v: compact(tokens) }) : tr("park.noUse");
+      return `<div class="park-row ${status.tone}">
+        <button class="park-open" data-act="provider-detail" data-key="${esc(r.key)}">
+          <span class="park-mark" style="--pc:${r.meta.color}">${esc(r.meta.glyph)}</span>
+          <span class="park-main"><b>${esc(r.meta.name)}</b><em>${esc(r.meta.vendor)} · ${esc(status.label)} · ${esc(use)}</em></span>
+        </button>
+        <span class="park-actions">
+          ${url ? `<button class="park-act primary" data-act="open-url" data-url="${esc(url)}">${esc(r.conn ? tr("park.managing") : tr("park.addCta"))} ↗</button>` : ""}
+        </span>
+      </div>`;
+    };
+
+    $("#drawerBody").innerHTML = `
+      <span class="drw-eyebrow">${esc(tr("park.eyebrow"))}</span>
+      <div class="drw-head">
+        <span class="drw-mark" style="--pc:#2C6157">⚙</span>
+        <div><h2>${esc(tr("park.title"))}</h2><p>${esc(tr("park.sub", { ais: activeCount, routes: fkeys.length, src: routerOk ? tr("park.online") : tr("park.offline") }))}</p></div>
+      </div>
+      <div class="drw-kpis">
+        <div class="drw-kpi"><span>${esc(tr("port.legendAi"))}</span><b>${activeCount}/${rows.length}</b></div>
+        <div class="drw-kpi"><span>${esc(tr("port.dockRoutes"))}</span><b>${answered}/${fkeys.length}</b></div>
+        <div class="drw-kpi"><span>${esc(tr("port.legendTool"))}</span><b>${installedTools}/${tools.length}</b></div>
+        <div class="drw-kpi"><span>${esc(tr("park.ideasShort"))}</span><b>${sugg.length}</b></div>
+      </div>
+      <div class="drw-section"><h3>${esc(tr("park.aiTitle"))}</h3>
+        <div class="drw-note" style="margin-top:0">${esc(tr("park.aiSub"))}</div>
+        <div class="park-tools-row">
+          <button class="park-act" data-act="probe-all"${state.probingAll ? " disabled" : ""}>${esc(state.probingAll ? tr("fleet.testing") : tr("fleet.testAll"))}</button>
+          <button class="park-act" data-act="fleet-refresh">${esc(tr("fleet.loadCatalog"))}</button>
+        </div>
+        <div class="park-list">${connected.length ? connected.map(aiRow).join("") : `<div class="park-empty">${esc(tr("park.empty"))}</div>`}</div>
+      </div>
+      <div class="drw-section"><h3>${esc(tr("park.addTitle"))}</h3>
+        <div class="drw-note" style="margin-top:0">${esc(tr("park.addSub"))}</div>
+        ${addable.length ? `<div class="park-add-grid">${addable.map((r) => `<div class="park-add">
+          <span class="park-mark" style="--pc:${r.meta.color}">${esc(r.meta.glyph)}</span>
+          <span class="park-main"><b>${esc(r.meta.name)}</b><em>${esc(r.meta.vendor)}</em></span>
+          ${url ? `<button class="park-act primary" data-act="open-url" data-url="${esc(url)}">${esc(tr("park.addCta"))} ↗</button>` : ""}
+        </div>`).join("")}</div>` : `<div class="park-empty">${esc(tr("park.allConnected"))}</div>`}
+        <div class="drw-note">${esc(tr("park.addHint"))}</div>
+      </div>
+      <div class="drw-section"><h3>${esc(tr("park.toolsTitle"))}</h3>
+        <div class="drw-note" style="margin-top:0">${esc(tr("park.toolsSub"))}</div>
+        <div class="park-list">${tools.map((t) => `<div class="park-row tool ${t.installed ? "ok" : "warn"}">
+          <span class="park-main"><b>${esc(t.name)}</b><em>${esc(t.kind === "cli" ? "CLI" : "App")} · ${esc(t.source)} · ${esc(t.installed ? tr("port.installed") : tr("port.missing"))}</em></span>
+          <span class="park-actions">
+            ${t.installed
+              ? `<button class="park-act" data-act="wing" data-key="sessoes">${esc(tr("park.sessions"))}</button>`
+              : `<button class="park-act primary" data-act="manual-step" data-step="2">${esc(tr("park.install"))}</button>`}
+          </span>
+        </div>`).join("")}</div>
+      </div>
+      ${sugg.length ? `<div class="drw-section"><h3>${esc(tr("park.suggTitle"))}</h3>
+        <div class="drw-note" style="margin-top:0">${esc(tr("park.suggSub"))}</div>
+        <div class="park-sugg">${sugg.map((s, i) => parkSuggRow(s, i)).join("")}</div>
+      </div>` : ""}
+      <div class="drw-section"><h3>${esc(tr("park.sourcesTitle"))}</h3>
+        <div class="drw-line"><span>${esc(tr("park.router"))}</span><b>${esc(routerOk ? tr("park.online") : tr("park.offline"))} · ${int(router.combos?.length || 0)} combos</b></div>
+        <div class="drw-line"><span>${esc(tr("park.headroom"))}</span><b>${esc(headroom.online ? tr("park.online") : tr("park.offline"))}</b></div>
+        <div class="drw-line"><span>${esc(tr("park.tunnel"))}</span><b>${esc(router.tunnel ? tr("park.active") : tr("park.off"))}</b></div>
+        <div class="drw-line"><span>${esc(tr("park.keys"))}</span><b>${esc(tr(keys === 1 ? "park.maskedOne" : "park.masked", { n: keys }))}</b></div>
+        <div class="drw-actions" style="margin-top:8px">
+          ${url ? `<button class="btn primary" data-act="open-url" data-url="${esc(url)}">${esc(tr("park.openPanel"))} ↗</button>` : ""}
+          <button class="btn ghost" data-act="wing" data-key="perfil">${esc(tr("nav.perfil"))}</button>
+        </div>
+      </div>
+      <div class="drw-note">${esc(tr("park.note"))}</div>
+      <div class="drw-actions"><button class="btn ghost" data-act="park-close">${esc(tr("park.close"))}</button></div>
+    `;
+  }
+
+  function openParkDrawer() {
+    if (!state.snap) { toast(tr("common.loading"), "warn"); return; }
+    state.settingsOpen = false;
+    state.budgetOpen = false;
+    state.drawerKey = "__park";
+    renderParkBody();
+    const d = $("#drawer");
+    d.hidden = false;
+    d.setAttribute("aria-hidden", "false");
+    void d.offsetWidth;
+    d.classList.add("open");
+  }
+
   function openProviderDrawer(key) {
     const S = state.snap;
+    const fromPark = state.drawerKey === "__park";
     const meta = provMeta(key);
     const usage = (S.providers || []).find((p) => p.provider === key);
     const conn = (S.connections || []).find((c) => c.provider === key);
@@ -3730,6 +3944,7 @@
       ["share", usage ? pct(usage.share) : "—"],
     ];
     openDrawer(`
+      ${fromPark ? `<button class="drw-back" data-act="park">← ${esc(tr("park.title"))}</button>` : ""}
       <span class="drw-eyebrow">${esc(meta.vendor || "provedor")} · manual local</span>
       <div class="drw-head">
         <span class="drw-mark" style="--pc:${meta.color}">${esc(meta.glyph)}</span>
@@ -4328,7 +4543,8 @@
     state.fleetPaint = requestAnimationFrame(() => {
       state.fleetPaint = null;
       if (state.wing === "biblioteca") renderWing("biblioteca", { preserve: true });
-      if (state.drawerKey && $("#drawer").classList.contains("open")) openProviderDrawer(state.drawerKey);
+      if (state.drawerKey === "__park" && $("#drawer").classList.contains("open")) renderParkBody();
+      else if (state.drawerKey && $("#drawer").classList.contains("open")) openProviderDrawer(state.drawerKey);
       if (!state.wing) { renderPortHud(); renderPortInspector(); }
     });
   }

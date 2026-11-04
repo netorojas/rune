@@ -158,7 +158,11 @@
                 <span>Ver fluxo</span>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
               </button>
-              <button class="port-btn primary" data-act="manual">
+              <button class="port-btn primary" data-act="park" id="portParkBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                <span id="portParkLabel">Configurar parque</span>
+              </button>
+              <button class="port-btn ghost" data-act="manual">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.2a2.6 2.6 0 015 1.1c0 1.7-2.6 1.9-2.6 3.5"/><circle cx="12" cy="17.2" r=".9" fill="currentColor"/></svg>
                 <span id="portManualLabel">Como jogar</span>
               </button>
@@ -258,6 +262,7 @@
           </div>
 
           <div class="port-zoom" role="group" aria-label="Câmera do mapa">
+            <button data-act="park" class="port-zoom-park" aria-label="Configurar parque" title="Configurar parque"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3M6 6l2.1 2.1M15.9 15.9L18 18M18 6l-2.1 2.1M8.1 15.9L6 18"/></svg></button>
             <button data-act="port-zoom-in" aria-label="Aproximar" title="Aproximar">+</button>
             <button data-act="port-zoom-out" aria-label="Afastar" title="Afastar">−</button>
             <button data-act="port-reset" aria-label="Recentralizar" title="Recentralizar">◎</button>
